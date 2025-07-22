@@ -7,7 +7,7 @@ from typing import Any, Optional, Type, cast
 
 from pydantic import model_validator
 
-from metadata.data_quality.interface.test_suite_interface import TestSuiteInterface
+# from metadata.data_quality.interface.test_suite_interface import TestSuiteInterface
 from metadata.generated.schema.entity.services.serviceType import ServiceType
 from metadata.ingestion.api.steps import Source
 from metadata.ingestion.connections.connection import BaseConnection
@@ -150,7 +150,7 @@ def import_test_suite_class(
     service_type: ServiceType,
     source_type: str,
     source_config_type: Optional[str] = None,
-) -> Type[TestSuiteInterface]:
+):
     try:
         class_path = BaseSpec.get_for_source(service_type, source_type).test_suite_class
     except DynamicImportException:
@@ -164,7 +164,7 @@ def import_test_suite_class(
         raise ValueError(
             f"Test suite class not found for service type {service_type} and source type {source_type}"
         )
-    return cast(Type[TestSuiteInterface], import_from_module(class_path))
+    return import_from_module(class_path)
 
 
 def import_sampler_class(

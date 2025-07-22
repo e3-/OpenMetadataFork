@@ -19,7 +19,7 @@ from typing import Any, Callable, Optional, Type, TypeVar
 
 from pydantic import BaseModel
 
-from metadata.data_quality.validations.base_test_handler import BaseTestValidator
+# from metadata.data_quality.validations.base_test_handler import BaseTestValidator
 from metadata.generated.schema.entity.services.connections.metadata.openMetadataConnection import (
     OpenMetadataConnection,
 )
@@ -241,7 +241,7 @@ def import_test_case_class(
     test_type: str,
     runner_type: str,
     test_definition: str,
-) -> Type[BaseTestValidator]:
+):
     """_summary_
 
     Args:

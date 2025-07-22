@@ -19,11 +19,11 @@ from functools import singledispatch
 from types import DynamicClassAttribute
 from typing import Dict, Optional, Union
 
-from metadata.data_quality.api.models import (
-    TableAndTests,
-    TestCaseResultResponse,
-    TestCaseResults,
-)
+# from metadata.data_quality.api.models import (
+#     TableAndTests,
+#     TestCaseResultResponse,
+#     TestCaseResults,
+# )
 from metadata.generated.schema.api.lineage.addLineage import AddLineageRequest
 from metadata.generated.schema.type.queryParserData import QueryParserData
 from metadata.generated.schema.type.tableQuery import TableQueries
@@ -259,23 +259,23 @@ def _(record: OMetaLifeCycleData) -> str:
     return f"{record.entity.__name__} Lifecycle [{record.entity_fqn}]"
 
 
-@get_log_name.register
-def _(record: TableAndTests) -> str:
-    if record.table:
-        return f"Tests for [{record.table.fullyQualifiedName.root}]"
+# @get_log_name.register
+# def _(record: TableAndTests) -> str:
+#     if record.table:
+#         return f"Tests for [{record.table.fullyQualifiedName.root}]"
 
-    return f"Test Suite [{record.executable_test_suite.name.root}]"
-
-
-@get_log_name.register
-def _(record: TestCaseResults) -> str:
-    """We don't want to log this in the status"""
-    return ",".join(set(result.testCase.name.root for result in record.test_results))
+#     return f"Test Suite [{record.executable_test_suite.name.root}]"
 
 
-@get_log_name.register
-def _(record: TestCaseResultResponse) -> str:
-    return record.testCase.fullyQualifiedName.root
+# @get_log_name.register
+# def _(record: TestCaseResults) -> str:
+#     """We don't want to log this in the status"""
+#     return ",".join(set(result.testCase.name.root for result in record.test_results))
+
+
+# @get_log_name.register
+# def _(record: TestCaseResultResponse) -> str:
+#     return record.testCase.fullyQualifiedName.root
 
 
 @get_log_name.register
