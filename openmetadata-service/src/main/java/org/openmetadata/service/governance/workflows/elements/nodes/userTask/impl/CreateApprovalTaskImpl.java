@@ -58,7 +58,7 @@ public class CreateApprovalTaskImpl implements TaskListener {
       EntityInterface entity = Entity.getEntity(entityLink, "*", Include.ALL);
 
       // Get approval threshold, default to 1 if not set
-      Integer approvalThreshold = 1;
+      int approvalThreshold = 1;
       if (approvalThresholdExpr != null) {
         String thresholdStr = (String) approvalThresholdExpr.getValue(delegateTask);
         if (thresholdStr != null && !thresholdStr.isEmpty()) {
@@ -67,7 +67,7 @@ public class CreateApprovalTaskImpl implements TaskListener {
       }
 
       // Get rejection threshold, default to 1 if not set
-      Integer rejectionThreshold = 1;
+      int rejectionThreshold = 1;
       if (rejectionThresholdExpr != null) {
         String thresholdStr = (String) rejectionThresholdExpr.getValue(delegateTask);
         if (thresholdStr != null && !thresholdStr.isEmpty()) {
@@ -75,7 +75,7 @@ public class CreateApprovalTaskImpl implements TaskListener {
         }
       }
 
-      Thread task = createApprovalTask(entity, assignees, approvalThreshold, rejectionThreshold);
+      Thread task = createApprovalTask(entity, assignees);
       WorkflowHandler.getInstance().setCustomTaskId(delegateTask.getId(), task.getId());
 
       // Set the thresholds as task variables for use in WorkflowHandler
@@ -86,9 +86,8 @@ public class CreateApprovalTaskImpl implements TaskListener {
       delegateTask.setVariable("rejectersList", new ArrayList<String>());
     } catch (Exception exc) {
       LOG.error(
-          String.format(
-              "[%s] Failure: ",
-              getProcessDefinitionKeyFromId(delegateTask.getProcessDefinitionId())),
+          "[{}] Failure: ",
+          getProcessDefinitionKeyFromId(delegateTask.getProcessDefinitionId()),
           exc);
       varHandler.setGlobalVariable(EXCEPTION_VARIABLE, ExceptionUtils.getStackTrace(exc));
       throw new BpmnError(WORKFLOW_RUNTIME_EXCEPTION, exc.getMessage());
@@ -115,11 +114,7 @@ public class CreateApprovalTaskImpl implements TaskListener {
         assigneeEntityLink.getEntityType(), assigneeEntityLink.getEntityFQN(), Include.NON_DELETED);
   }
 
-  private Thread createApprovalTask(
-      EntityInterface entity,
-      List<EntityReference> assignees,
-      Integer approvalThreshold,
-      Integer rejectionThreshold) {
+  private Thread createApprovalTask(EntityInterface entity, List<EntityReference> assignees) {
     FeedRepository feedRepository = Entity.getFeedRepository();
     MessageParser.EntityLink about =
         new MessageParser.EntityLink(
@@ -127,12 +122,30 @@ public class CreateApprovalTaskImpl implements TaskListener {
 
     Thread thread;
 
+    ChangeEvent changeEvent;
     try {
       thread = feedRepository.getTask(about, TaskType.RequestApproval, TaskStatus.Open);
-      // If there's a Task already opened, we resolve the Flowable task before creating a new
-      // UserTask in the new WorkflowInstance
+      // Update the existing thread with new assignees before terminating the workflow
+      thread.getTask().setAssignees(FeedMapper.formatAssignees(assignees));
+
+      thread.withUpdatedBy(entity.getUpdatedBy()).withUpdatedAt(System.currentTimeMillis());
+
+      // Save the updated thread to database
+      Entity.getCollectionDAO().feedDAO().update(thread.getId(), JsonUtils.pojoToJson(thread));
+
+      // Now terminate the old workflow instance
       WorkflowHandler.getInstance()
           .terminateTaskProcessInstance(thread.getId(), "A Newer Process Instance is Running.");
+      // Create and publish ChangeEvent for notification system
+      changeEvent =
+          new ChangeEvent()
+              .withId(UUID.randomUUID())
+              .withEventType(EventType.THREAD_UPDATED)
+              .withEntityId(thread.getId())
+              .withEntityType(Entity.THREAD)
+              .withUserName(entity.getUpdatedBy())
+              .withTimestamp(thread.getUpdatedAt())
+              .withEntity(thread);
     } catch (EntityNotFoundException ex) {
       TaskDetails taskDetails =
           new TaskDetails()
@@ -154,7 +167,7 @@ public class CreateApprovalTaskImpl implements TaskListener {
       feedRepository.create(thread);
 
       // Create and publish ChangeEvent for notification system
-      ChangeEvent changeEvent =
+      changeEvent =
           new ChangeEvent()
               .withId(UUID.randomUUID())
               .withEventType(EventType.THREAD_CREATED)
@@ -163,12 +176,10 @@ public class CreateApprovalTaskImpl implements TaskListener {
               .withUserName(entity.getUpdatedBy())
               .withTimestamp(thread.getUpdatedAt())
               .withEntity(thread);
-
-      Entity.getCollectionDAO().changeEventDAO().insert(JsonUtils.pojoToMaskedJson(changeEvent));
-
-      // Send WebSocket Notification
-      WebsocketNotificationHandler.handleTaskNotification(thread);
     }
+    Entity.getCollectionDAO().changeEventDAO().insert(JsonUtils.pojoToMaskedJson(changeEvent));
+    // Send WebSocket Notification
+    WebsocketNotificationHandler.handleTaskNotification(thread);
     return thread;
   }
 }

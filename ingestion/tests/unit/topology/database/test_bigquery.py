@@ -18,7 +18,7 @@ import types
 from copy import deepcopy
 from typing import Dict
 from unittest import TestCase
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 from sqlalchemy import Integer, String
 
@@ -51,6 +51,7 @@ from metadata.generated.schema.type.basic import (
     SourceUrl,
 )
 from metadata.generated.schema.type.entityReference import EntityReference
+from metadata.generated.schema.type.filterPattern import FilterPattern
 from metadata.ingestion.api.parser import parse_workflow_config_gracefully
 from metadata.ingestion.ometa.ometa_api import OpenMetadata
 from metadata.ingestion.source.database.bigquery.lineage import BigqueryLineageSource
@@ -462,23 +463,11 @@ class BigqueryUnitTest(TestCase):
             either.right for either in self.bq_source.yield_database(MOCK_DB_NAME)
         ]
 
-    def test_yield_database_schema(self):
-        def schema_comment_query(query: str):
-            if query.strip().startswith(
-                "SELECT option_value as schema_description FROM"
-            ):
-                result = Mock()
-                mock_result = Mock()
-                mock_result.schema_description = (
-                    '"Some description with it\'s own\\nnew line"'
-                )
-                result.result.return_value = [mock_result]
-                return result
-            else:
-                raise NotImplementedError
-
-        self.bq_source.client.query = schema_comment_query
-
+    @patch(
+        "metadata.ingestion.source.database.bigquery.metadata.BigquerySource.get_schema_description"
+    )
+    def test_yield_database_schema(self, get_schema_description):
+        get_schema_description.return_value = "Some description with it's own\nnew line"
         assert EXPTECTED_DATABASE_SCHEMA == [
             either.right
             for either in self.bq_source.yield_database_schema(
@@ -521,14 +510,10 @@ class BigqueryUnitTest(TestCase):
                     table[0]
                 ]  # pylint: disable=cell-var-from-loop
             )
-            self.bq_source.inspector.get_columns = (
-                lambda table_name, schema, table_type, db_name: MOCK_COLUMN_DATA[
-                    i
-                ]  # pylint: disable=cell-var-from-loop
-            )
-            self.bq_source.inspector.get_table_ddl = (
-                lambda table_name, schema, db_name: None  # pylint: disable=cell-var-from-loop
-            )
+            self.bq_source._get_columns_internal = lambda schema_name, table_name, db_name, inspector, table_type,: MOCK_COLUMN_DATA[
+                i
+            ]  # pylint: disable=cell-var-from-loop
+
             self.bq_source.inspector.get_table_comment = lambda table_name, schema: {
                 "text": table[2]
             }  # pylint: disable=cell-var-from-loop
@@ -541,6 +526,188 @@ class BigqueryUnitTest(TestCase):
                 either.right
                 for either in self.bq_source.yield_table((table[0], table[1]))
             ]
+
+    def test_topology_runner_error_handling(self):
+        """
+        TopologyRunnerMixin._run_node_post_process and _run_node_producer both
+        record any exception as a status failure (not just log it) and yield
+        nothing on error, but yield normally on success.
+
+        Base class methods are called directly via TopologyRunnerMixin to bypass
+        any subclass overrides.
+        """
+        from metadata.ingestion.api.topology_runner import TopologyRunnerMixin
+        from metadata.ingestion.models.topology import NodeStage, TopologyNode
+
+        _dummy_stage = NodeStage(type_=DatabaseSchema, processor="dummy")
+
+        # --- post_process: error is recorded as status failure ---
+        node = TopologyNode(
+            producer="get_schemas",
+            stages=[_dummy_stage],
+            post_process=["failing_post_process"],
+        )
+
+        def failing_post_process():
+            raise RuntimeError("something went wrong")
+
+        self.bq_source.failing_post_process = failing_post_process
+        initial_failures = len(self.bq_source.status.failures)
+
+        results = list(TopologyRunnerMixin._run_node_post_process(self.bq_source, node))
+
+        assert results == []
+        assert len(self.bq_source.status.failures) == initial_failures + 1
+        assert (
+            self.bq_source.status.failures[-1].name
+            == "Post Process failing_post_process"
+        )
+
+        # --- post_process: success yields entity normally ---
+        sentinel = object()
+        success_pp_node = TopologyNode(
+            producer="get_schemas",
+            stages=[_dummy_stage],
+            post_process=["successful_post_process"],
+        )
+
+        def successful_post_process():
+            yield sentinel
+
+        self.bq_source.successful_post_process = successful_post_process
+        failures_before = len(self.bq_source.status.failures)
+
+        results = list(
+            TopologyRunnerMixin._run_node_post_process(self.bq_source, success_pp_node)
+        )
+
+        assert results == [sentinel]
+        assert len(self.bq_source.status.failures) == failures_before
+
+        # --- node_producer: error is recorded as status failure ---
+        error_producer_node = TopologyNode(
+            producer="failing_producer",
+            stages=[_dummy_stage],
+        )
+
+        def failing_producer():
+            raise RuntimeError("producer failed")
+
+        self.bq_source.failing_producer = failing_producer
+        initial_failures = len(self.bq_source.status.failures)
+
+        results = list(
+            TopologyRunnerMixin._run_node_producer(self.bq_source, error_producer_node)
+        )
+
+        assert results == []
+        assert len(self.bq_source.status.failures) == initial_failures + 1
+        assert self.bq_source.status.failures[-1].name == "Producer failing_producer"
+
+        # --- node_producer: success yields entity normally ---
+        sentinel2 = object()
+        success_producer_node = TopologyNode(
+            producer="successful_producer",
+            stages=[_dummy_stage],
+        )
+
+        def successful_producer():
+            yield sentinel2
+
+        self.bq_source.successful_producer = successful_producer
+        failures_before = len(self.bq_source.status.failures)
+
+        results = list(
+            TopologyRunnerMixin._run_node_producer(
+                self.bq_source, success_producer_node
+            )
+        )
+
+        assert results == [sentinel2]
+        assert len(self.bq_source.status.failures) == failures_before
+
+    def test_get_stored_procedures(self):
+        """
+        Test fetching stored procedures with filter
+        """
+        self.bq_source.source_config.includeStoredProcedures = True
+        self.bq_source.source_config.storedProcedureFilterPattern = FilterPattern(
+            excludes=["sp_exclude"]
+        )
+        self.bq_source.context.get().__dict__["database"] = MOCK_DB_NAME
+        self.bq_source.context.get().__dict__[
+            "database_schema"
+        ] = MOCK_DATABASE_SCHEMA.name.root
+
+        mock_engine = MagicMock()
+        self.bq_source.engine = mock_engine
+
+        # Mock rows
+        row1 = {
+            "name": "sp_include",
+            "definition": "def1",
+            "language": "SQL",
+        }
+        row2 = {
+            "name": "sp_exclude",
+            "definition": "def2",
+            "language": "SQL",
+        }
+
+        mock_conn = MagicMock()
+        mock_conn.execute.return_value.all.return_value = [row1, row2]
+        mock_engine.connect.return_value.__enter__ = MagicMock(return_value=mock_conn)
+        mock_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+
+        results = list(self.bq_source.get_stored_procedures())
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].name, "sp_include")
+
+    @patch("metadata.utils.credentials.auth.default")
+    def test_usage_location_passed_to_client_and_engine(self, mock_auth_default):
+        """
+        Test usageLocation is correctly passed to BigQuery client and added to engine URL
+        """
+        from google.auth.credentials import Credentials
+
+        from metadata.generated.schema.entity.services.connections.database.bigQueryConnection import (
+            BigQueryConnection,
+        )
+        from metadata.ingestion.source.database.bigquery.helper import (
+            get_inspector_details,
+        )
+
+        mock_credentials = Mock(spec=Credentials)
+        mock_auth_default.return_value = (mock_credentials, "test-project")
+
+        config_with_location = deepcopy(
+            mock_bq_config["source"]["serviceConnection"]["config"]
+        )
+        config_with_location["usageLocation"] = "eu"
+
+        service_connection = BigQueryConnection.model_validate(config_with_location)
+
+        result = get_inspector_details(
+            database_name="test-project", service_connection=service_connection
+        )
+        assert "location=eu" in str(result.engine.url)
+        assert result.client._location == "eu"
+
+        config_without_location = deepcopy(
+            mock_bq_config["source"]["serviceConnection"]["config"]
+        )
+        config_without_location["usageLocation"] = None
+
+        service_connection_null = BigQueryConnection.model_validate(
+            config_without_location
+        )
+
+        result_null = get_inspector_details(
+            database_name="test-project", service_connection=service_connection_null
+        )
+        assert "location=eu" not in str(result_null.engine.url)
+        assert result_null.client._location is None
 
 
 class BigqueryLineageSourceTest(TestCase):
@@ -577,3 +744,236 @@ class BigqueryLineageSourceTest(TestCase):
     def test_get_engine_without_project_id_specified(self):
         for engine in self.bq_query_parser.get_engine():
             assert engine is self.bq_query_parser.engine
+
+
+class TestBigqueryRegionAwareQueries:
+    """
+    Tests for region-aware INFORMATION_SCHEMA queries in the BigQuery connector.
+
+    Covers get_stored_procedures and _prefetch_table_ddls, which must route queries
+    to the correct GCP region when a dataset lives outside the engine's default location.
+    """
+
+    def setup_method(self):
+        patcher_test_conn = patch(
+            "metadata.ingestion.source.database.bigquery.metadata.BigquerySource._test_connection"
+        )
+        patcher_set_project = patch(
+            "metadata.ingestion.source.database.bigquery.metadata.BigquerySource.set_project_id"
+        )
+        patcher_get_conn = patch(
+            "metadata.ingestion.source.database.bigquery.connection.get_connection",
+            return_value=Mock(),
+        )
+        self._patchers = [patcher_test_conn, patcher_set_project, patcher_get_conn]
+        for p in self._patchers:
+            p.start()
+
+        metadata = OpenMetadata(
+            OpenMetadataConnection.model_validate(
+                mock_bq_config["workflowConfig"]["openMetadataServerConfig"]
+            )
+        )
+        self.bq_source = BigquerySource.create(mock_bq_config["source"], metadata)
+        self.bq_source.context.get().__dict__[
+            "database_service"
+        ] = MOCK_DATABASE_SERVICE.name.root
+        self.bq_source.context.get().__dict__["database"] = MOCK_DB_NAME
+        self.bq_source.context.get().__dict__[
+            "database_schema"
+        ] = MOCK_DATABASE_SCHEMA.name.root
+        self.bq_source.client = Mock()
+        self.bq_source.source_config.includeStoredProcedures = True
+        self.bq_source.source_config.includeDDL = True
+
+    def teardown_method(self):
+        for p in self._patchers:
+            p.stop()
+
+    def _make_engine_mock(self, rows):
+        mock_engine = MagicMock()
+        mock_conn = MagicMock()
+        mock_conn.execute.return_value.all.return_value = rows
+        mock_engine.connect.return_value.__enter__ = MagicMock(return_value=mock_conn)
+        mock_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+        return mock_engine, mock_conn
+
+    def _set_dataset_location(self, location):
+        mock_dataset = Mock()
+        mock_dataset.location = location
+        self.bq_source.client.get_dataset.return_value = mock_dataset
+        self.bq_source._current_dataset_obj = None
+
+    # --- get_stored_procedures ---
+
+    def test_get_stored_procedures_uses_region_aware_query(self):
+        """Region-aware query is used when the dataset has a location."""
+        self._set_dataset_location("EU")
+        sp_row = {"name": "my_proc", "definition": "BEGIN END", "language": "SQL"}
+        mock_engine, mock_conn = self._make_engine_mock([sp_row])
+        self.bq_source.engine = mock_engine
+
+        results = list(self.bq_source.get_stored_procedures())
+
+        assert len(results) == 1
+        assert results[0].name == "my_proc"
+        query_str = str(mock_conn.execute.call_args[0][0])
+        assert "region-EU" in query_str
+
+    def test_get_stored_procedures_falls_back_without_location(self):
+        """Dataset-scoped query is used when dataset location is None."""
+        self._set_dataset_location(None)
+        sp_row = {"name": "my_proc", "definition": "BEGIN END", "language": "SQL"}
+        mock_engine, mock_conn = self._make_engine_mock([sp_row])
+        self.bq_source.engine = mock_engine
+
+        results = list(self.bq_source.get_stored_procedures())
+
+        assert len(results) == 1
+        query_str = str(mock_conn.execute.call_args[0][0])
+        assert "region-" not in query_str
+        assert MOCK_DATABASE_SCHEMA.name.root in query_str
+
+    def test_get_stored_procedures_falls_back_when_location_unavailable(self):
+        """When client.get_dataset raises, falls back to dataset-scoped query and returns results."""
+        self.bq_source.client.get_dataset.side_effect = Exception("permission denied")
+        self.bq_source._current_dataset_obj = None
+        sp_row = {"name": "my_proc", "definition": "BEGIN END", "language": "SQL"}
+        mock_engine, mock_conn = self._make_engine_mock([sp_row])
+        self.bq_source.engine = mock_engine
+
+        results = list(self.bq_source.get_stored_procedures())
+
+        assert len(results) == 1
+        assert results[0].name == "my_proc"
+        query_str = str(mock_conn.execute.call_args[0][0])
+        assert "region-" not in query_str
+
+    def test_get_stored_procedures_returns_empty_when_dataset_not_found(self):
+        """When both client.get_dataset and SQL execution fail, returns empty without a producer failure."""
+        self.bq_source.client.get_dataset.side_effect = Exception("404 Not found")
+        self.bq_source._current_dataset_obj = None
+        mock_engine = MagicMock()
+        mock_conn = MagicMock()
+        mock_conn.execute.side_effect = Exception("404 Not found in location US")
+        mock_engine.connect.return_value.__enter__ = MagicMock(return_value=mock_conn)
+        mock_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+        self.bq_source.engine = mock_engine
+        failures_before = len(self.bq_source.status.failures)
+
+        results = list(self.bq_source.get_stored_procedures())
+
+        assert results == []
+        assert len(self.bq_source.status.failures) == failures_before
+
+    def test_get_stored_procedures_returns_empty_when_query_fails(self):
+        """When SQL execution raises, returns empty without recording a producer failure."""
+        self._set_dataset_location("US")
+        mock_engine = MagicMock()
+        mock_conn = MagicMock()
+        mock_conn.execute.side_effect = Exception("connection error")
+        mock_engine.connect.return_value.__enter__ = MagicMock(return_value=mock_conn)
+        mock_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+        self.bq_source.engine = mock_engine
+        failures_before = len(self.bq_source.status.failures)
+
+        results = list(self.bq_source.get_stored_procedures())
+
+        assert results == []
+        assert len(self.bq_source.status.failures) == failures_before
+
+    # --- _prefetch_table_ddls ---
+
+    def test_prefetch_table_ddls_uses_region_aware_query(self):
+        """Region-aware DDL query is used when the dataset has a location."""
+        self._set_dataset_location("EU")
+        ddl_row = Mock()
+        ddl_row.table_name = "my_table"
+        ddl_row.ddl = "CREATE TABLE my_table (id INT64)"
+        mock_engine, mock_conn = self._make_engine_mock([ddl_row])
+        self.bq_source.engine = mock_engine
+
+        self.bq_source._prefetch_table_ddls(MOCK_DATABASE_SCHEMA.name.root)
+
+        assert (
+            self.bq_source._table_ddl_cache["my_table"]
+            == "CREATE TABLE my_table (id INT64)"
+        )
+        query_str = str(mock_conn.execute.call_args[0][0])
+        assert "region-EU" in query_str
+
+    def test_prefetch_table_ddls_falls_back_without_location(self):
+        """Dataset-scoped DDL query is used when dataset location is None."""
+        self._set_dataset_location(None)
+        ddl_row = Mock()
+        ddl_row.table_name = "my_table"
+        ddl_row.ddl = "CREATE TABLE my_table (id INT64)"
+        mock_engine, mock_conn = self._make_engine_mock([ddl_row])
+        self.bq_source.engine = mock_engine
+
+        self.bq_source._prefetch_table_ddls(MOCK_DATABASE_SCHEMA.name.root)
+
+        assert (
+            self.bq_source._table_ddl_cache["my_table"]
+            == "CREATE TABLE my_table (id INT64)"
+        )
+        query_str = str(mock_conn.execute.call_args[0][0])
+        assert "region-" not in query_str
+        assert MOCK_DATABASE_SCHEMA.name.root in query_str
+
+    def test_prefetch_table_ddls_skipped_when_disabled(self):
+        """When includeDDL is False, the method returns early without any API calls."""
+        self.bq_source.source_config.includeDDL = False
+
+        self.bq_source._prefetch_table_ddls(MOCK_DATABASE_SCHEMA.name.root)
+
+        self.bq_source.client.get_dataset.assert_not_called()
+        assert self.bq_source._table_ddl_cache == {}
+
+    def test_prefetch_table_ddls_falls_back_when_location_unavailable(self):
+        """When client.get_dataset raises, falls back to dataset-scoped query and populates cache."""
+        self.bq_source.client.get_dataset.side_effect = Exception("permission denied")
+        self.bq_source._current_dataset_obj = None
+        ddl_row = Mock()
+        ddl_row.table_name = "my_table"
+        ddl_row.ddl = "CREATE TABLE my_table (id INT64)"
+        mock_engine, mock_conn = self._make_engine_mock([ddl_row])
+        self.bq_source.engine = mock_engine
+
+        self.bq_source._prefetch_table_ddls(MOCK_DATABASE_SCHEMA.name.root)
+
+        assert (
+            self.bq_source._table_ddl_cache["my_table"]
+            == "CREATE TABLE my_table (id INT64)"
+        )
+        query_str = str(mock_conn.execute.call_args[0][0])
+        assert "region-" not in query_str
+
+    def test_prefetch_table_ddls_cache_empty_when_dataset_not_found(self):
+        """When both client.get_dataset and SQL execution fail, cache stays empty and no exception propagates."""
+        self.bq_source.client.get_dataset.side_effect = Exception("404 Not found")
+        self.bq_source._current_dataset_obj = None
+        mock_engine = MagicMock()
+        mock_conn = MagicMock()
+        mock_conn.execute.side_effect = Exception("404 Not found in location US")
+        mock_engine.connect.return_value.__enter__ = MagicMock(return_value=mock_conn)
+        mock_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+        self.bq_source.engine = mock_engine
+
+        self.bq_source._prefetch_table_ddls(MOCK_DATABASE_SCHEMA.name.root)
+
+        assert self.bq_source._table_ddl_cache == {}
+
+    def test_prefetch_table_ddls_cache_empty_when_query_fails(self):
+        """When SQL execution raises, cache stays empty and no exception propagates."""
+        self._set_dataset_location("US")
+        mock_engine = MagicMock()
+        mock_conn = MagicMock()
+        mock_conn.execute.side_effect = Exception("connection error")
+        mock_engine.connect.return_value.__enter__ = MagicMock(return_value=mock_conn)
+        mock_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+        self.bq_source.engine = mock_engine
+
+        self.bq_source._prefetch_table_ddls(MOCK_DATABASE_SCHEMA.name.root)
+
+        assert self.bq_source._table_ddl_cache == {}

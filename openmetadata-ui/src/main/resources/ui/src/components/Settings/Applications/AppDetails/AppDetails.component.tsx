@@ -61,6 +61,7 @@ import {
   triggerOnDemandApp,
   uninstallApp,
 } from '../../../../rest/applicationAPI';
+import brandClassBase from '../../../../utils/BrandData/BrandClassBase';
 import { getRelativeTime } from '../../../../utils/date-time/DateTimeUtils';
 import { getEntityName } from '../../../../utils/EntityUtils';
 import { formatFormDataForSubmit } from '../../../../utils/JSONSchemaFormUtils';
@@ -72,6 +73,7 @@ import TabsLabel from '../../../common/TabsLabel/TabsLabel.component';
 import ConfirmationModal from '../../../Modals/ConfirmationModal/ConfirmationModal';
 import PageLayoutV1 from '../../../PageLayoutV1/PageLayoutV1';
 import { useApplicationsProvider } from '../ApplicationsProvider/ApplicationsProvider';
+import AppLiveIndexing from '../AppLiveIndexing/AppLiveIndexing.component';
 import AppLogo from '../AppLogo/AppLogo.component';
 import AppRunsHistory from '../AppRunsHistory/AppRunsHistory.component';
 import AppSchedule from '../AppSchedule/AppSchedule.component';
@@ -219,6 +221,7 @@ const AppDetails = () => {
               <ManageButtonItemLabel
                 description={t('message.uninstall-app', {
                   app: getEntityName(appData),
+                  brandName: brandClassBase.getPageTitle(),
                 })}
                 icon={DeleteIcon}
                 id="uninstall-button"
@@ -419,6 +422,20 @@ const AppDetails = () => {
                   jsonSchema={jsonSchema as RJSFSchema}
                 />
               ),
+            },
+          ]
+        : []),
+      ...(!appData?.deleted && appData?.name === 'SearchIndexingApplication'
+        ? [
+            {
+              label: (
+                <TabsLabel
+                  id={ApplicationTabs.LIVE_INDEXING}
+                  name={t('label.live-indexing')}
+                />
+              ),
+              key: ApplicationTabs.LIVE_INDEXING,
+              children: <AppLiveIndexing appData={appData} />,
             },
           ]
         : []),

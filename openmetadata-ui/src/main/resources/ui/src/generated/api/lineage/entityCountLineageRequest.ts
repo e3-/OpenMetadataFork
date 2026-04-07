@@ -1,5 +1,5 @@
 /*
- *  Copyright 2025 Collate.
+ *  Copyright 2026 Collate.
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
@@ -15,9 +15,18 @@
  */
 export interface EntityCountLineageRequest {
     /**
+     * Filter lineage by specific column names. Use comma-separated list (e.g., 'col1,col2') to
+     * filter columns.
+     */
+    columnFilter?: string;
+    /**
      * Direction of lineage traversal (upstream or downstream)
      */
     direction: LineageDirection;
+    /**
+     * Maximum downstream depth to compute pagination info for when requested
+     */
+    downstreamDepth?: number;
     /**
      * Entity Fqn to search lineage
      */
@@ -30,6 +39,10 @@ export interface EntityCountLineageRequest {
      * Include deleted entities
      */
     includeDeleted?: boolean;
+    /**
+     * Include pagination totals and depth counts in the response
+     */
+    includePaginationInfo?: boolean;
     /**
      * Include source fields
      */
@@ -48,6 +61,11 @@ export interface EntityCountLineageRequest {
      */
     nodeDepth?: number;
     /**
+     * Preserve all paths when applying node-level filters. When true, intermediate nodes that
+     * don't match filters are kept if they're part of a path to matching nodes.
+     */
+    preservePaths?: boolean;
+    /**
      * Query Filter
      */
     queryFilter?: string;
@@ -55,6 +73,10 @@ export interface EntityCountLineageRequest {
      * Number of entities to return in this page
      */
     size?: number;
+    /**
+     * Maximum upstream depth to compute pagination info for when requested
+     */
+    upstreamDepth?: number;
 }
 
 /**

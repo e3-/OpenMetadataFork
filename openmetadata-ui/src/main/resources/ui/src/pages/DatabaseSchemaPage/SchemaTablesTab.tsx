@@ -23,7 +23,6 @@ import { useNavigate } from 'react-router-dom';
 import DisplayName from '../../components/common/DisplayName/DisplayName';
 import ErrorPlaceHolder from '../../components/common/ErrorWithPlaceholder/ErrorPlaceHolder';
 import { PagingHandlerParams } from '../../components/common/NextPrevious/NextPrevious.interface';
-import RichTextEditorPreviewerNew from '../../components/common/RichTextEditor/RichTextEditorPreviewNew';
 import TableAntd from '../../components/common/Table/Table';
 import { useGenericContext } from '../../components/Customization/GenericProvider/GenericProvider';
 import { EntityName } from '../../components/Modals/EntityNameModal/EntityNameModal.interface';
@@ -69,10 +68,13 @@ import {
 } from '../../utils/PermissionsUtils';
 import { stringToHTML } from '../../utils/StringsUtils';
 import {
+  certificationTableObject,
   dataProductTableObject,
+  descriptionTableObject,
   domainTableObject,
   ownerTableObject,
   tagTableObject,
+  tierTableObject,
 } from '../../utils/TableColumn.util';
 import { showErrorToast } from '../../utils/ToastUtils';
 
@@ -138,10 +140,6 @@ function SchemaTablesTab({
   const searchSchema = useCallback(
     async (searchValue: string, pageNumber = INITIAL_PAGING_VALUE) => {
       setTableDataLoading(true);
-      handlePageChange(pageNumber, {
-        cursorType: null,
-        cursorValue: undefined,
-      });
       try {
         const response = await searchQuery({
           query: '',
@@ -226,24 +224,19 @@ function SchemaTablesTab({
   const onSchemaSearch = useCallback(
     (value: string) => {
       setFilters({ schema: isEmpty(value) ? undefined : value });
-      if (value) {
-        searchSchema(value);
-      } else {
-        getSchemaTables();
-        handlePageChange(INITIAL_PAGING_VALUE);
-      }
+      handlePageChange(INITIAL_PAGING_VALUE, {
+        cursorType: null,
+        cursorValue: undefined,
+      });
     },
-    [setFilters, searchSchema, getSchemaTables]
+    [setFilters, handlePageChange]
   );
 
   const tablePaginationHandler = useCallback(
     ({ cursorType, currentPage }: PagingHandlerParams) => {
       if (searchValue) {
-        searchSchema(searchValue, currentPage);
+        handlePageChange(currentPage);
       } else if (cursorType) {
-        getSchemaTables({ [cursorType]: paging[cursorType] });
-      }
-      if (cursorType && paging[cursorType]) {
         handlePageChange(
           currentPage,
           {
@@ -254,7 +247,7 @@ function SchemaTablesTab({
         );
       }
     },
-    [paging, getSchemaTables, handlePageChange]
+    [paging, handlePageChange, searchValue]
   );
 
   const tableColumn: ColumnsType<Table> = useMemo(
@@ -284,22 +277,13 @@ function SchemaTablesTab({
           );
         },
       },
-      {
-        title: t('label.description'),
-        dataIndex: 'description',
-        key: 'description',
-        width: 400,
-        render: (text: string) =>
-          text?.trim() ? (
-            <RichTextEditorPreviewerNew markdown={text} />
-          ) : (
-            <span className="text-grey-muted">{t('label.no-description')}</span>
-          ),
-      },
+      ...descriptionTableObject<Table>({ width: 400 }),
       ...ownerTableObject<Table>(),
       ...domainTableObject<Table>(),
       ...dataProductTableObject<Table>(),
       ...tagTableObject<Table>(),
+      ...tierTableObject<Table>(),
+      ...certificationTableObject<Table>(),
     ],
     [handleDisplayNameUpdate, allowEditDisplayNamePermission]
   );
@@ -314,6 +298,15 @@ function SchemaTablesTab({
   };
 
   useEffect(() => {
+    if (searchValue) {
+      searchSchema(searchValue, currentPage);
+    }
+  }, [searchValue, currentPage, showDeletedSchemas]);
+
+  useEffect(() => {
+    if (searchValue) {
+      return;
+    }
     if (isCustomizationPage) {
       setTableData(DUMMY_DATABASE_SCHEMA_TABLES_DETAILS);
       setTableDataLoading(false);
@@ -322,12 +315,10 @@ function SchemaTablesTab({
     }
     if (viewDatabaseSchemaPermission && decodedDatabaseSchemaFQN) {
       if (pagingCursor?.cursorType && pagingCursor?.cursorValue) {
-        // Fetch data if cursorType is present in URL params with cursor Value to handle browser back navigation
         getSchemaTables({
           [pagingCursor.cursorType]: pagingCursor.cursorValue,
         });
       } else {
-        // Otherwise, just fetch the data without cursor value
         getSchemaTables({ limit: pageSize });
       }
     }
@@ -337,6 +328,8 @@ function SchemaTablesTab({
     viewDatabaseSchemaPermission,
     pageSize,
     isCustomizationPage,
+    pagingCursor,
+    searchValue,
   ]);
 
   useEffect(() => {
@@ -350,6 +343,7 @@ function SchemaTablesTab({
       placeholder: t('label.search-for-type', {
         type: t('label.table'),
       }),
+      searchValue: searchValue,
       typingInterval: 500,
       onSearch: onSchemaSearch,
     }),

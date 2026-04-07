@@ -12,10 +12,12 @@
  */
 
 import { isEmpty } from 'lodash';
-import { FC, useEffect, useMemo } from 'react';
+import { FC, ReactNode, useEffect, useMemo } from 'react';
+import { RouterProvider } from 'react-aria-components';
 import { HelmetProvider } from 'react-helmet-async';
 import { I18nextProvider } from 'react-i18next';
-import { BrowserRouter } from 'react-router-dom';
+import { BrowserRouter, useNavigate } from 'react-router-dom';
+import { useShallow } from 'zustand/react/shallow';
 import AppRouter from './components/AppRouter/AppRouter';
 import { AuthProvider } from './components/Auth/AuthProviders/AuthProvider';
 import ErrorBoundary from './components/common/ErrorBoundary/ErrorBoundary';
@@ -46,11 +48,25 @@ import { DndProvider } from 'react-dnd';
 import { HTML5Backend } from 'react-dnd-html5-backend';
 import { DEFAULT_THEME } from './constants/Appearance.constants';
 import RuleEnforcementProvider from './context/RuleEnforcementProvider/RuleEnforcementProvider';
+import { ThemeProvider as UntitledUIThemeProvider } from './context/UntitledUIThemeProvider/theme-provider';
 import i18n from './utils/i18next/LocalUtil';
 import { getThemeConfig } from './utils/ThemeUtils';
+
+const ReactAriaRouterBridge = ({ children }: { children: ReactNode }) => {
+  const navigate = useNavigate();
+
+  return <RouterProvider navigate={navigate}>{children}</RouterProvider>;
+};
+
 const App: FC = () => {
   const { applicationConfig, setApplicationConfig, setRdfEnabled } =
-    useApplicationStore();
+    useApplicationStore(
+      useShallow((state) => ({
+        applicationConfig: state.applicationConfig,
+        setApplicationConfig: state.setApplicationConfig,
+        setRdfEnabled: state.setRdfEnabled,
+      }))
+    );
 
   // Create dynamic MUI theme based on user customizations
   const muiTheme = useMemo(
@@ -102,55 +118,61 @@ const App: FC = () => {
     <div className="main-container">
       <div className="content-wrapper" data-testid="content-wrapper">
         <BrowserRouter basename={getBasePath()}>
-          <I18nextProvider i18n={i18n}>
-            <HelmetProvider>
-              <ErrorBoundary>
-                <AntDConfigProvider>
-                  <ThemeProvider theme={muiTheme}>
-                    <GlobalStyles styles={{ html: { fontSize: '14px' } }} />
-                    <SnackbarProvider
-                      Components={{
-                        default: SnackbarContent,
-                        error: SnackbarContent,
-                        success: SnackbarContent,
-                        warning: SnackbarContent,
-                        info: SnackbarContent,
-                      }}
-                      anchorOrigin={{
-                        vertical: 'top',
-                        horizontal: 'right',
-                      }}
-                      autoHideDuration={6000}
-                      maxSnack={3}>
-                      <AuthProvider childComponentType={AppRouter}>
-                        <TourProvider>
-                          <WebAnalyticsProvider>
-                            <PermissionProvider>
-                              <WebSocketProvider>
-                                <ApplicationsProvider>
-                                  <AsyncDeleteProvider>
-                                    <EntityExportModalProvider>
-                                      <AirflowStatusProvider>
-                                        <RuleEnforcementProvider>
-                                          <DndProvider backend={HTML5Backend}>
-                                            <AppRouter />
-                                          </DndProvider>
-                                        </RuleEnforcementProvider>
-                                      </AirflowStatusProvider>
-                                    </EntityExportModalProvider>
-                                  </AsyncDeleteProvider>
-                                </ApplicationsProvider>
-                              </WebSocketProvider>
-                            </PermissionProvider>
-                          </WebAnalyticsProvider>
-                        </TourProvider>
-                      </AuthProvider>
-                    </SnackbarProvider>
-                  </ThemeProvider>
-                </AntDConfigProvider>
-              </ErrorBoundary>
-            </HelmetProvider>
-          </I18nextProvider>
+          <ReactAriaRouterBridge>
+            <I18nextProvider i18n={i18n}>
+              <HelmetProvider>
+                <ErrorBoundary>
+                  <AntDConfigProvider>
+                    <UntitledUIThemeProvider
+                      brandColors={applicationConfig?.customTheme}>
+                      <ThemeProvider theme={muiTheme}>
+                        <GlobalStyles styles={{ html: { fontSize: '14px' } }} />
+                        <SnackbarProvider
+                          Components={{
+                            default: SnackbarContent,
+                            error: SnackbarContent,
+                            success: SnackbarContent,
+                            warning: SnackbarContent,
+                            info: SnackbarContent,
+                          }}
+                          anchorOrigin={{
+                            vertical: 'top',
+                            horizontal: 'right',
+                          }}
+                          autoHideDuration={6000}
+                          maxSnack={3}>
+                          <AuthProvider childComponentType={AppRouter}>
+                            <TourProvider>
+                              <WebAnalyticsProvider>
+                                <PermissionProvider>
+                                  <WebSocketProvider>
+                                    <ApplicationsProvider>
+                                      <AsyncDeleteProvider>
+                                        <EntityExportModalProvider>
+                                          <AirflowStatusProvider>
+                                            <RuleEnforcementProvider>
+                                              <DndProvider
+                                                backend={HTML5Backend}>
+                                                <AppRouter />
+                                              </DndProvider>
+                                            </RuleEnforcementProvider>
+                                          </AirflowStatusProvider>
+                                        </EntityExportModalProvider>
+                                      </AsyncDeleteProvider>
+                                    </ApplicationsProvider>
+                                  </WebSocketProvider>
+                                </PermissionProvider>
+                              </WebAnalyticsProvider>
+                            </TourProvider>
+                          </AuthProvider>
+                        </SnackbarProvider>
+                      </ThemeProvider>
+                    </UntitledUIThemeProvider>
+                  </AntDConfigProvider>
+                </ErrorBoundary>
+              </HelmetProvider>
+            </I18nextProvider>
+          </ReactAriaRouterBridge>
         </BrowserRouter>
       </div>
     </div>

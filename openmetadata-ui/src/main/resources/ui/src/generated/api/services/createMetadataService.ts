@@ -1,5 +1,5 @@
 /*
- *  Copyright 2025 Collate.
+ *  Copyright 2026 Collate.
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
@@ -409,14 +409,22 @@ export interface AlationDatabaseConnection {
     /**
      * Host and port of the source service.
      *
-     * Host and port of the MySQL service.
+     * Host and port of the MySQL service. For GCP CloudSQL, use the instance connection name in
+     * the format 'project_id:region:instance_name'.
      */
     hostPort?: string;
     /**
      * Ingest data from all databases in Postgres. You can use databaseFilterPattern on top of
      * this.
      */
-    ingestAllDatabases?:      boolean;
+    ingestAllDatabases?: boolean;
+    /**
+     * Fully qualified name of the view or table to use for query logs. If not provided,
+     * defaults to pg_stat_statements. Use this to configure a custom view (e.g.,
+     * my_schema.custom_pg_stat_statements) when direct access to pg_stat_statements is
+     * restricted.
+     */
+    queryStatementSource?:    string;
     sampleDataStorageConfig?: SampleDataStorageConfig;
     /**
      * Regex to only include/exclude schemas that matches the pattern.
@@ -429,16 +437,20 @@ export interface AlationDatabaseConnection {
     /**
      * SSL Configuration details.
      */
-    sslConfig?:                  Config;
-    sslMode?:                    SSLMode;
-    supportsDatabase?:           boolean;
-    supportsDataDiff?:           boolean;
-    supportsDBTExtraction?:      boolean;
-    supportsLineageExtraction?:  boolean;
-    supportsMetadataExtraction?: boolean;
-    supportsProfiler?:           boolean;
-    supportsQueryComment?:       boolean;
-    supportsUsageExtraction?:    boolean;
+    sslConfig?: Config;
+    sslMode?:   SSLMode;
+    /**
+     * Regex to only include/exclude stored procedures that matches the pattern.
+     */
+    storedProcedureFilterPattern?: FilterPattern;
+    supportsDatabase?:             boolean;
+    supportsDataDiff?:             boolean;
+    supportsDBTExtraction?:        boolean;
+    supportsLineageExtraction?:    boolean;
+    supportsMetadataExtraction?:   boolean;
+    supportsProfiler?:             boolean;
+    supportsQueryComment?:         boolean;
+    supportsUsageExtraction?:      boolean;
     /**
      * Regex to only include/exclude tables that matches the pattern.
      */
@@ -480,14 +492,26 @@ export interface AlationDatabaseConnection {
  * IAM Auth Database Connection Config
  *
  * Azure Database Connection Config
+ *
+ * GCP CloudSQL Database Connection Config. Uses the Google Cloud SQL Python Connector.
  */
 export interface AuthConfigurationType {
     /**
      * Password to connect to source.
+     *
+     * Database user password. Leave empty if using IAM database authentication.
      */
     password?:    string;
     awsConfig?:   AWSCredentials;
     azureConfig?: AzureCredentials;
+    /**
+     * Use GCP IAM for database authentication instead of a password.
+     */
+    enableIamAuth?: boolean;
+    /**
+     * GCP credentials to use. If not provided, Application Default Credentials will be used.
+     */
+    gcpConfig?: GCPCredentials;
 }
 
 /**
@@ -526,6 +550,12 @@ export interface AWSCredentials {
      * AWS Session Token.
      */
     awsSessionToken?: string;
+    /**
+     * Enable AWS IAM authentication. When enabled, uses the default credential provider chain
+     * (environment variables, instance profile, etc.). Defaults to false for backward
+     * compatibility.
+     */
+    enabled?: boolean;
     /**
      * EndPoint URL for the AWS
      */
@@ -567,6 +597,125 @@ export interface AzureCredentials {
 }
 
 /**
+ * GCP credentials to use. If not provided, Application Default Credentials will be used.
+ *
+ * GCP credentials configs.
+ */
+export interface GCPCredentials {
+    /**
+     * We support two ways of authenticating to GCP i.e via GCP Credentials Values or GCP
+     * Credentials Path
+     */
+    gcpConfig: GCPCredentialsConfiguration;
+    /**
+     * we enable the authenticated service account to impersonate another service account
+     */
+    gcpImpersonateServiceAccount?: GCPImpersonateServiceAccountValues;
+}
+
+/**
+ * We support two ways of authenticating to GCP i.e via GCP Credentials Values or GCP
+ * Credentials Path
+ *
+ * Pass the raw credential values provided by GCP
+ *
+ * Pass the path of file containing the GCP credentials info
+ *
+ * Use the application default credentials
+ */
+export interface GCPCredentialsConfiguration {
+    /**
+     * Google Cloud auth provider certificate.
+     */
+    authProviderX509CertUrl?: string;
+    /**
+     * Google Cloud auth uri.
+     */
+    authUri?: string;
+    /**
+     * Google Cloud email.
+     */
+    clientEmail?: string;
+    /**
+     * Google Cloud Client ID.
+     */
+    clientId?: string;
+    /**
+     * Google Cloud client certificate uri.
+     */
+    clientX509CertUrl?: string;
+    /**
+     * Google Cloud private key.
+     */
+    privateKey?: string;
+    /**
+     * Google Cloud private key id.
+     */
+    privateKeyId?: string;
+    /**
+     * Project ID
+     *
+     * GCP Project ID to parse metadata from
+     */
+    projectId?: string[] | string;
+    /**
+     * Google Cloud token uri.
+     */
+    tokenUri?: string;
+    /**
+     * Google Cloud Platform account type.
+     *
+     * Google Cloud Platform ADC ( Application Default Credentials )
+     */
+    type?: string;
+    /**
+     * Path of the file containing the GCP credentials info
+     */
+    path?: string;
+    /**
+     * Google Security Token Service audience which contains the resource name for the workload
+     * identity pool and the provider identifier in that pool.
+     */
+    audience?: string;
+    /**
+     * This object defines the mechanism used to retrieve the external credential from the local
+     * environment so that it can be exchanged for a GCP access token via the STS endpoint
+     */
+    credentialSource?: { [key: string]: string };
+    /**
+     * Google Cloud Platform account type.
+     */
+    externalType?: string;
+    /**
+     * Google Security Token Service subject token type based on the OAuth 2.0 token exchange
+     * spec.
+     */
+    subjectTokenType?: string;
+    /**
+     * Google Security Token Service token exchange endpoint.
+     */
+    tokenURL?: string;
+    [property: string]: any;
+}
+
+/**
+ * we enable the authenticated service account to impersonate another service account
+ *
+ * Pass the values to impersonate a service account of Google Cloud
+ */
+export interface GCPImpersonateServiceAccountValues {
+    /**
+     * The impersonated service account email
+     */
+    impersonateServiceAccount?: string;
+    /**
+     * Number of seconds the delegated credential should be valid
+     */
+    lifetime?: number;
+    [property: string]: any;
+}
+
+/**
  * Regex to only include/exclude databases that matches the pattern.
  *
  * Regex to only fetch entities that matches the pattern.
@@ -574,6 +723,8 @@ export interface AzureCredentials {
  * Regex to only include/exclude schemas that matches the pattern.
  *
  * Regex to only include/exclude tables that matches the pattern.
+ *
+ * Regex to only include/exclude stored procedures that matches the pattern.
  *
  * Regex to only include/exclude domains that match the pattern.
  *
@@ -658,6 +809,12 @@ export interface AwsCredentials {
      * AWS Session Token.
      */
     awsSessionToken?: string;
+    /**
+     * Enable AWS IAM authentication. When enabled, uses the default credential provider chain
+     * (environment variables, instance profile, etc.). Defaults to false for backward
+     * compatibility.
+     */
+    enabled?: boolean;
     /**
      * EndPoint URL for the AWS
      */
@@ -896,6 +1053,14 @@ export interface EntityReference {
  */
 export interface TagLabel {
     /**
+     * Timestamp when this tag was applied in ISO 8601 format
+     */
+    appliedAt?: Date;
+    /**
+     * Who it is that applied this tag (e.g: a bot, AI or a human)
+     */
+    appliedBy?: string;
+    /**
      * Description for the tag label.
      */
     description?: string;
@@ -915,6 +1080,11 @@ export interface TagLabel {
      * used to determine the tag label.
      */
     labelType: LabelType;
+    /**
+     * Additional metadata associated with this tag label, such as recognizer information for
+     * automatically applied tags.
+     */
+    metadata?: TagLabelMetadata;
     /**
      * Name of the tag or glossary term.
      */
@@ -949,6 +1119,79 @@ export enum LabelType {
     Generated = "Generated",
     Manual = "Manual",
     Propagated = "Propagated",
+}
+
+/**
+ * Additional metadata associated with this tag label, such as recognizer information for
+ * automatically applied tags.
+ *
+ * Additional metadata associated with a tag label, including information about how the tag
+ * was applied.
+ */
+export interface TagLabelMetadata {
+    /**
+     * Epoch time in milliseconds when the certification tag expires
+     */
+    expiryDate?: number;
+    /**
+     * Metadata about the recognizer that automatically applied this tag
+     */
+    recognizer?: TagLabelRecognizerMetadata;
+}
+
+/**
+ * Metadata about the recognizer that automatically applied this tag
+ *
+ * Metadata about the recognizer that applied a tag, including scoring and pattern
+ * information.
+ */
+export interface TagLabelRecognizerMetadata {
+    /**
+     * Details of patterns that matched during recognition
+     */
+    patterns?: PatternMatch[];
+    /**
+     * Unique identifier of the recognizer that applied this tag
+     */
+    recognizerId: string;
+    /**
+     * Human-readable name of the recognizer
+     */
+    recognizerName: string;
+    /**
+     * Confidence score assigned by the recognizer (0.0 to 1.0)
+     */
+    score: number;
+    /**
+     * What the recognizer analyzed to apply this tag
+     */
+    target?: Target;
+}
+
+/**
+ * Information about a pattern that matched during recognition
+ */
+export interface PatternMatch {
+    /**
+     * Name of the pattern that matched
+     */
+    name: string;
+    /**
+     * Regular expression or pattern definition
+     */
+    regex?: string;
+    /**
+     * Confidence score for this specific pattern match
+     */
+    score: number;
+}
+
+/**
+ * What the recognizer analyzed to apply this tag
+ */
+export enum Target {
+    ColumnName = "column_name",
+    Content = "content",
 }
 
 /**

@@ -52,28 +52,13 @@ public class OktaAuthValidator {
         return domainValidation;
       }
 
-      // Validate against OIDC discovery document for public clients too
-      String discoveryUri = oktaDomain + OKTA_WELL_KNOWN_PATH;
-      OidcClientConfig publicClientConfig =
-          new OidcClientConfig().withId(authConfig.getClientId()).withDiscoveryUri(discoveryUri);
-
-      FieldError discoveryCheck =
-          discoveryValidator.validateAgainstDiscovery(discoveryUri, authConfig, publicClientConfig);
-      if (discoveryCheck != null) {
-        return discoveryCheck;
-      }
-
       FieldError clientIdValidation = validatePublicClientId(oktaDomain, authConfig.getClientId());
       if (clientIdValidation != null) {
         return clientIdValidation;
       }
 
-      FieldError publicKeyValidation = validatePublicKeyUrls(authConfig, oktaDomain, null);
-      if (publicKeyValidation != null) {
-        return publicKeyValidation;
-      }
-
-      return null; // Success - Okta public client validated
+      return validatePublicKeyUrls(
+          authConfig, oktaDomain, null); // Success - Okta public client validated
     } catch (Exception e) {
       LOG.error("Okta public client validation failed", e);
       return ValidationErrorBuilder.createFieldError(
@@ -96,7 +81,6 @@ public class OktaAuthValidator {
       }
 
       // Step 3: Validate against OIDC discovery document (scopes, response types, etc.)
-      //   String discoveryUri = oktaDomain + OKTA_WELL_KNOWN_PATH;
       FieldError discoveryCheck =
           discoveryValidator.validateAgainstDiscovery(
               oidcConfig.getDiscoveryUri(), authConfig, oidcConfig);
@@ -113,14 +97,11 @@ public class OktaAuthValidator {
 
       // Step 5: Validate client credentials (secret)
       String clientId = oidcConfig.getId();
-      FieldError credentialsValidation =
-          validateClientCredentials(
-              oktaDomain, clientId, oidcConfig.getSecret(), oidcConfig.getDiscoveryUri());
-      if (credentialsValidation != null) {
-        return credentialsValidation;
-      }
-
-      return null; // Success - Okta confidential client validated
+      return validateClientCredentials(
+          oktaDomain,
+          clientId,
+          oidcConfig.getSecret(),
+          oidcConfig.getDiscoveryUri()); // Success - Okta confidential client validated
     } catch (Exception e) {
       LOG.error("Okta confidential client validation failed", e);
       return ValidationErrorBuilder.createFieldError(
@@ -234,8 +215,11 @@ public class OktaAuthValidator {
       AuthenticationConfiguration authConfig, String oktaDomain, @Nullable String discoveryUri) {
     try {
       List<String> publicKeyUrls = authConfig.getPublicKeyUrls();
+      // Skip validation if publicKeyUrls is empty - it's auto-populated for confidential clients
       if (publicKeyUrls == null || publicKeyUrls.isEmpty()) {
-        throw new IllegalArgumentException("Public key URLs are required");
+        LOG.debug(
+            "publicKeyUrls is empty, skipping validation (auto-populated for confidential clients)");
+        return null;
       }
 
       // Determine expected JWKS URL based on client type
@@ -265,7 +249,7 @@ public class OktaAuthValidator {
         }
 
         JsonNode jwks = JsonUtils.readTree(response.getBody());
-        if (!jwks.has("keys") || jwks.get("keys").size() == 0) {
+        if (!jwks.has("keys") || jwks.get("keys").isEmpty()) {
           throw new IllegalArgumentException("Invalid JWKS: " + urlStr);
         }
       }

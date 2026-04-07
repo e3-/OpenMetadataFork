@@ -7,7 +7,6 @@ import es.co.elastic.clients.elasticsearch._types.query_dsl.Query;
 import es.co.elastic.clients.elasticsearch.core.SearchRequest;
 import es.co.elastic.clients.elasticsearch.core.SearchResponse;
 import es.co.elastic.clients.json.JsonData;
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -33,8 +32,7 @@ public class ElasticSearchSummaryCardAggregator
       long end,
       List<FormulaHolder> formulas,
       Map metricFormulaMap,
-      boolean live)
-      throws IOException {
+      boolean live) {
 
     SummaryCard summaryCard = JsonUtils.convertValue(diChart.getChartDetails(), SummaryCard.class);
 
@@ -67,7 +65,17 @@ public class ElasticSearchSummaryCardAggregator
           Query.of(
               q ->
                   q.range(
-                      r -> r.field("@timestamp").gte(JsonData.of(start)).lte(JsonData.of(end))));
+                      r ->
+                          r.untyped(
+                              u ->
+                                  u.field("@timestamp")
+                                      .gte(
+                                          es.co.elastic.clients.json.JsonData.of(
+                                              String.valueOf(start)))
+                                      .lte(
+                                          es.co.elastic.clients.json.JsonData.of(
+                                              String.valueOf(end))))));
+
       searchRequestBuilder.query(rangeQuery);
       searchRequestBuilder.index(DataInsightSystemChartRepository.getDataInsightsSearchIndex());
     } else {

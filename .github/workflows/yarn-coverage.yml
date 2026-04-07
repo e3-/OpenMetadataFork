@@ -8,6 +8,9 @@ on:
     types: [opened, synchronize, reopened, labeled, ready_for_review]
     paths:
       - openmetadata-ui/src/main/resources/ui/**
+      - "!openmetadata-ui/src/main/resources/ui/playwright/doc-generator/**"
+      - "!openmetadata-ui/src/main/resources/ui/playwright/docs/**"
+      - "!openmetadata-ui/src/main/resources/ui/scripts/**"
 
 permissions:
   contents: read
@@ -17,7 +20,7 @@ env:
   UI_WORKING_DIRECTORY: openmetadata-ui/src/main/resources/ui
   UI_COVERAGE_DIRECTORY: openmetadata-ui/src/main/resources/ui/src/test/unit/coverage
 concurrency:
-  group: yarn-coverage-${{ github.head_ref || github.run_id }}
+  group: yarn-coverage-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 jobs:
   ui-coverage-tests:
@@ -57,7 +60,7 @@ jobs:
         id: yarn-cache-dir-path
         run: echo "dir=$(yarn cache dir)" >> $GITHUB_OUTPUT
 
-      - name: Caching NPM dependencies 
+      - name: Caching NPM dependencies
         uses: actions/cache@v4
         id: yarn-cache
         with:
@@ -108,15 +111,16 @@ jobs:
           sonar-scanner -Dsonar.host.url=${SONARCLOUD_URL} \
           -Dproject.settings=sonar-project.properties \
           -Dsonar.pullrequest.key=${{ github.event.pull_request.number }} \
-          -Dsonar.pullrequest.branch=${{ github.head_ref }} \
+          -Dsonar.pullrequest.branch=$PR_HEAD_REF \
           -Dsonar.pullrequest.base=main \
-          -Donar.pullrequest.github.repository=OpenMetadata \
+          -Dsonar.pullrequest.github.repository=OpenMetadata \
           -Dsonar.scm.revision=${{ github.event.pull_request.head.sha }} \
           -Dsonar.pullrequest.provider=github
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.UI_SONAR_TOKEN }}
           SONARCLOUD_URL: https://sonarcloud.io
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
       - name: SonarCloud Scan
         if: github.event_name == 'push' && steps.npm_install_sonar_scanner.outcome == 'success'
         working-directory: ${{ env.UI_WORKING_DIRECTORY }}

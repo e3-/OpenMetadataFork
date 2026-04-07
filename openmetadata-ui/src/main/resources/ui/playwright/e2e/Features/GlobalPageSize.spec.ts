@@ -13,6 +13,7 @@
 import { expect } from '@playwright/test';
 import { GlobalSettingOptions } from '../../constant/settings';
 import { SidebarItem } from '../../constant/sidebar';
+import { waitForAllLoadersToDisappear } from '../../utils/entity';
 import { settingClick, sidebarClick } from '../../utils/sidebar';
 import { test } from '../fixtures/pages';
 
@@ -24,26 +25,18 @@ test.describe('Table & Data Model columns table pagination', () => {
       '/table/sample_data.ecommerce_db.shopify.performance_test_table'
     );
 
-    await page.waitForLoadState('networkidle');
-    await page.waitForSelector('[data-testid="loader"]', {
-      state: 'detached',
-    });
+    await waitForAllLoadersToDisappear(page);
 
     // Change page size to 25
     await page.getByTestId('page-size-selection-dropdown').click();
     await page.getByRole('menuitem', { name: '25 / Page' }).click();
 
-    await page.waitForSelector('[data-testid="loader"]', {
-      state: 'detached',
-    });
+    await waitForAllLoadersToDisappear(page);
 
     // Go to Explore Page
     await sidebarClick(page, SidebarItem.EXPLORE);
 
-    await page.waitForLoadState('networkidle');
-    await page.waitForSelector('[data-testid="loader"]', {
-      state: 'detached',
-    });
+    await waitForAllLoadersToDisappear(page);
 
     await expect(page.getByText('25 / page')).toBeVisible();
 
@@ -54,10 +47,7 @@ test.describe('Table & Data Model columns table pagination', () => {
     // Go to Users Page
     await settingClick(page, GlobalSettingOptions.USERS);
 
-    await page.waitForLoadState('networkidle');
-    await page.waitForSelector('[data-testid="loader"]', {
-      state: 'detached',
-    });
+    await waitForAllLoadersToDisappear(page);
 
     await expect(page.getByText('50 / page')).toBeVisible();
   });

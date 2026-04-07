@@ -1,6 +1,7 @@
 """
 Test Tableau Dashboard
 """
+
 import uuid
 from datetime import datetime, timedelta
 from types import SimpleNamespace
@@ -33,9 +34,11 @@ from metadata.ingestion.source.dashboard.tableau.metadata import (
 )
 from metadata.ingestion.source.dashboard.tableau.models import (
     DataSource,
+    DatasourceField,
     TableauBaseModel,
     TableauChart,
     TableauOwner,
+    UpstreamColumn,
     UpstreamTable,
 )
 
@@ -306,11 +309,7 @@ class TableauUnitTest(TestCase):
         )
         with patch.object(OpenMetadata, "get_by_name", return_value=return_value):
             self.assertEqual(
-                len(list(self.tableau.yield_dashboard_usage(MOCK_DASHBOARD))), 1
-            )
-
-            self.assertIsNotNone(
-                list(self.tableau.yield_dashboard_usage(MOCK_DASHBOARD))[0].left
+                len(list(self.tableau.yield_dashboard_usage(MOCK_DASHBOARD))), 0
             )
 
     def test_check_basemodel_returns_id_as_string(self):
@@ -380,20 +379,24 @@ class TableauUnitTest(TestCase):
             return_value=mock_dashboard_details_list,
         ):
 
-            with patch.object(
-                self.tableau,
-                "get_project_names",
-                side_effect=lambda dashboard_details: project_names_return_map[
-                    dashboard_details.name
-                ],
-            ), patch.object(
-                self.tableau,
-                "get_dashboards_list",
-                return_value=mock_dashboard_details_list,
-            ), patch.object(
-                self.tableau,
-                "get_dashboard_details",
-                side_effect=lambda x: x,
+            with (
+                patch.object(
+                    self.tableau,
+                    "get_project_names",
+                    side_effect=lambda dashboard_details: project_names_return_map[
+                        dashboard_details.name
+                    ],
+                ),
+                patch.object(
+                    self.tableau,
+                    "get_dashboards_list",
+                    return_value=mock_dashboard_details_list,
+                ),
+                patch.object(
+                    self.tableau,
+                    "get_dashboard_details",
+                    side_effect=lambda x: x,
+                ),
             ):
                 dashboards = list(self.tableau.get_dashboard())
                 self.assertEqual(len(dashboards), 1)
@@ -413,20 +416,24 @@ class TableauUnitTest(TestCase):
             return_value=mock_dashboard_details_list,
         ):
 
-            with patch.object(
-                self.tableau,
-                "get_project_names",
-                side_effect=lambda dashboard_details: project_names_return_map[
-                    dashboard_details.name
-                ],
-            ), patch.object(
-                self.tableau,
-                "get_dashboards_list",
-                return_value=mock_dashboard_details_list,
-            ), patch.object(
-                self.tableau,
-                "get_dashboard_details",
-                side_effect=lambda x: x,
+            with (
+                patch.object(
+                    self.tableau,
+                    "get_project_names",
+                    side_effect=lambda dashboard_details: project_names_return_map[
+                        dashboard_details.name
+                    ],
+                ),
+                patch.object(
+                    self.tableau,
+                    "get_dashboards_list",
+                    return_value=mock_dashboard_details_list,
+                ),
+                patch.object(
+                    self.tableau,
+                    "get_dashboard_details",
+                    side_effect=lambda x: x,
+                ),
             ):
                 dashboards = list(self.tableau.get_dashboard())
                 self.assertEqual(len(dashboards), 3)
@@ -447,20 +454,24 @@ class TableauUnitTest(TestCase):
             return_value=mock_dashboard_details_list,
         ):
 
-            with patch.object(
-                self.tableau,
-                "get_project_names",
-                side_effect=lambda dashboard_details: project_names_return_map[
-                    dashboard_details.name
-                ],
-            ), patch.object(
-                self.tableau,
-                "get_dashboards_list",
-                return_value=mock_dashboard_details_list,
-            ), patch.object(
-                self.tableau,
-                "get_dashboard_details",
-                side_effect=lambda x: x,
+            with (
+                patch.object(
+                    self.tableau,
+                    "get_project_names",
+                    side_effect=lambda dashboard_details: project_names_return_map[
+                        dashboard_details.name
+                    ],
+                ),
+                patch.object(
+                    self.tableau,
+                    "get_dashboards_list",
+                    return_value=mock_dashboard_details_list,
+                ),
+                patch.object(
+                    self.tableau,
+                    "get_dashboard_details",
+                    side_effect=lambda x: x,
+                ),
             ):
                 dashboards = list(self.tableau.get_dashboard())
                 self.assertEqual(len(dashboards), 0)
@@ -835,3 +846,233 @@ class TableauUnitTest(TestCase):
         # Test with includeOwners = False
         self.tableau.source_config.includeOwners = False
         self.assertFalse(self.tableau.source_config.includeOwners)
+
+    def test_get_table_entities_from_api_with_none_db_service_entity(self):
+        """
+        Test that _get_table_entities_from_api handles None db_service_entity gracefully
+        """
+        mock_table = UpstreamTable(
+            id="table1",
+            luid="table1_luid",
+            name="test_schema.test_table",
+            fullName="[test_database].[test_schema].[test_table]",
+            schema_="test_schema",
+            database={"id": "db1", "name": "test_database"},
+        )
+
+        with patch.object(
+            self.tableau.metadata, "get_by_name", return_value=None
+        ) as mock_get_by_name:
+            with patch.object(
+                self.tableau.metadata, "search_in_any_service", return_value=None
+            ):
+                result = self.tableau._get_table_entities_from_api(
+                    db_service_prefix="non_existent_service",
+                    table=mock_table,
+                )
+
+                mock_get_by_name.assert_called_once()
+                assert result is None
+
+    def test_datamodel_uses_own_project_over_dashboard_project(self):
+        """
+        Test that when a published datasource has its own projectName,
+        the datamodel request uses it instead of the dashboard's project.
+        """
+        dashboard_with_project = TableauDashboard(
+            id="wb-001",
+            name="Sales Overview",
+            project=TableauBaseModel(id="p1", name="Marketing"),
+            charts=[],
+            dataModels=[
+                DataSource(
+                    id="ds-pub-001",
+                    name="Revenue Metrics",
+                    projectName="Finance",
+                    fields=[],
+                )
+            ],
+            tags=[],
+        )
+
+        results = list(
+            self.tableau._create_datamodel_request(
+                data_model=dashboard_with_project.dataModels[0],
+                dashboard_details=dashboard_with_project,
+            )
+        )
+        assert len(results) == 1
+        assert results[0].right.project == "Finance"
+
+    def test_datamodel_falls_back_to_dashboard_project(self):
+        """
+        Test that when a datasource has no projectName (e.g. embedded),
+        it falls back to the dashboard's project.
+        """
+        dashboard_with_project = TableauDashboard(
+            id="wb-002",
+            name="Ops Dashboard",
+            project=TableauBaseModel(id="p2", name="Operations"),
+            charts=[],
+            dataModels=[
+                DataSource(
+                    id="ds-emb-001",
+                    name="Order Volumes",
+                    fields=[],
+                )
+            ],
+            tags=[],
+        )
+
+        results = list(
+            self.tableau._create_datamodel_request(
+                data_model=dashboard_with_project.dataModels[0],
+                dashboard_details=dashboard_with_project,
+            )
+        )
+        assert len(results) == 1
+        assert results[0].right.project == "Operations"
+
+    def test_datamodel_project_none_when_both_missing(self):
+        """
+        Test that project is None when neither the datasource nor the
+        dashboard has a project.
+        """
+        dashboard_no_project = TableauDashboard(
+            id="wb-003",
+            name="Ad Hoc Analysis",
+            charts=[],
+            dataModels=[
+                DataSource(
+                    id="ds-emb-002",
+                    name="Temp Data",
+                    fields=[],
+                )
+            ],
+            tags=[],
+        )
+
+        results = list(
+            self.tableau._create_datamodel_request(
+                data_model=dashboard_no_project.dataModels[0],
+                dashboard_details=dashboard_no_project,
+            )
+        )
+        assert len(results) == 1
+        assert results[0].right.project is None
+
+    def test_column_description_includes_formula(self):
+        """
+        Test that when a field has a formula (CalculatedField), the column
+        description is enriched with the formula text.
+        """
+        data_source = DataSource(
+            id="ds-calc-001",
+            name="Delivery Metrics",
+            fields=[
+                DatasourceField(
+                    id="fld-001",
+                    name="On Time Rate",
+                    description="Percentage of deliveries completed within SLA.",
+                    formula="SUM([On Time Count])/SUM([Total Deliveries])",
+                    upstreamColumns=[
+                        UpstreamColumn(
+                            id="col-001",
+                            name="ON_TIME_COUNT",
+                            remoteType="NUMERIC",
+                        ),
+                        UpstreamColumn(
+                            id="col-002",
+                            name="TOTAL_DELIVERIES",
+                            remoteType="NUMERIC",
+                        ),
+                    ],
+                ),
+            ],
+        )
+
+        columns = self.tableau.get_column_info(data_source)
+        assert len(columns) == 1
+        desc = columns[0].description.root
+        assert "Percentage of deliveries completed within SLA." in desc
+        assert "**Formula:** `SUM([On Time Count])/SUM([Total Deliveries])`" in desc
+
+    def test_column_description_formula_only_when_no_description(self):
+        """
+        Test that when a calculated field has a formula but no description,
+        the column description is just the formula text.
+        """
+        data_source = DataSource(
+            id="ds-calc-002",
+            name="Territory Analysis",
+            fields=[
+                DatasourceField(
+                    id="fld-002",
+                    name="Region Bucket",
+                    description=None,
+                    formula="[Sales Region]",
+                    upstreamColumns=[],
+                ),
+            ],
+        )
+
+        columns = self.tableau.get_column_info(data_source)
+        assert len(columns) == 1
+        desc = columns[0].description.root
+        assert desc == "**Formula:** `[Sales Region]`"
+
+    def test_column_description_without_formula(self):
+        """
+        Test that a regular field (non-calculated) keeps its plain description.
+        """
+        data_source = DataSource(
+            id="ds-reg-001",
+            name="Customer Facts",
+            fields=[
+                DatasourceField(
+                    id="fld-003",
+                    name="Signup Date",
+                    description="Date the customer signed up.",
+                    formula=None,
+                    upstreamColumns=[
+                        UpstreamColumn(
+                            id="col-003",
+                            name="SIGNUP_DATE",
+                            remoteType="DATE",
+                        ),
+                    ],
+                ),
+            ],
+        )
+
+        columns = self.tableau.get_column_info(data_source)
+        assert len(columns) == 1
+        assert columns[0].description.root == "Date the customer signed up."
+
+    def test_column_no_description_no_formula(self):
+        """
+        Test that a field with no description and no formula gets None description.
+        """
+        data_source = DataSource(
+            id="ds-reg-002",
+            name="Raw Events",
+            fields=[
+                DatasourceField(
+                    id="fld-004",
+                    name="Event Timestamp",
+                    description=None,
+                    formula=None,
+                    upstreamColumns=[
+                        UpstreamColumn(
+                            id="col-004",
+                            name="EVENT_TS",
+                            remoteType="DATETIME",
+                        ),
+                    ],
+                ),
+            ],
+        )
+
+        columns = self.tableau.get_column_info(data_source)
+        assert len(columns) == 1
+        assert columns[0].description is None

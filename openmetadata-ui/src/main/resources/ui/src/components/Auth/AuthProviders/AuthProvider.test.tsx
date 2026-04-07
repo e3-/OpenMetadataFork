@@ -10,8 +10,9 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { AxiosResponse } from 'axios';
+import { act } from 'react-test-renderer';
 import { AuthProvider as AuthProviderProps } from '../../../generated/configuration/authenticationConfiguration';
 import axiosClient from '../../../rest';
 import TokenService from '../../../utils/Auth/TokenService/TokenServiceUtil';
@@ -157,6 +158,34 @@ describe('Test auth provider', () => {
     fireEvent.click(logoutButton);
 
     expect(mockOnLogoutHandler).toHaveBeenCalled();
+  });
+
+  it('onLoginHandler should handle race condition with polling mechanism', () => {
+    const ConsumerComponent = () => {
+      const { onLoginHandler } = useAuthProvider();
+
+      return (
+        <button
+          data-testid="login-button"
+          onClick={() => {
+            expect(typeof onLoginHandler).toBe('function');
+
+            onLoginHandler();
+          }}>
+          Login
+        </button>
+      );
+    };
+
+    const { getByTestId } = render(
+      <AuthProvider childComponentType={ConsumerComponent}>
+        <ConsumerComponent />
+      </AuthProvider>
+    );
+
+    const loginButton = getByTestId('login-button');
+
+    expect(loginButton).toBeInTheDocument();
   });
 });
 
@@ -308,7 +337,6 @@ describe('Test axios response interceptor', () => {
     try {
       await errorHandler?.(mockError);
     } catch (error) {
-      // eslint-disable-next-line jest/no-conditional-expect, jest/no-try-expect
       expect(error).toEqual(mockError);
     }
   });
@@ -339,7 +367,66 @@ describe('Test axios response interceptor', () => {
     try {
       await errorHandler?.(mockError);
     } catch (error) {
-      // eslint-disable-next-line jest/no-conditional-expect, jest/no-try-expect
+      expect(error).toEqual(mockError);
+    }
+  });
+
+  it('should not call refresh for auth/refresh api', async () => {
+    const mockUse = jest.spyOn(axiosClient.interceptors.response, 'use');
+    const mockAxios = jest.fn().mockResolvedValue({ data: 'success' });
+
+    jest.spyOn(axiosClient, 'request').mockImplementation(mockAxios);
+
+    await act(async () => {
+      render(<WrapperComponent />);
+    });
+
+    const [, errorHandler] = mockUse.mock.calls[0];
+    const mockError = {
+      response: {
+        status: 401,
+        data: { message: 'Token expired' },
+      },
+      config: {
+        url: 'auth/refresh',
+        headers: {},
+        baseURL: '',
+      },
+    };
+
+    try {
+      await errorHandler?.(mockError);
+    } catch (error) {
+      expect(error).toEqual(mockError);
+    }
+  });
+
+  it('should not call refresh for /auth/refresh api', async () => {
+    const mockUse = jest.spyOn(axiosClient.interceptors.response, 'use');
+    const mockAxios = jest.fn().mockResolvedValue({ data: 'success' });
+
+    jest.spyOn(axiosClient, 'request').mockImplementation(mockAxios);
+
+    await act(async () => {
+      render(<WrapperComponent />);
+    });
+
+    const [, errorHandler] = mockUse.mock.calls[0];
+    const mockError = {
+      response: {
+        status: 401,
+        data: { message: 'Token expired' },
+      },
+      config: {
+        url: '/auth/refresh',
+        headers: {},
+        baseURL: '',
+      },
+    };
+
+    try {
+      await errorHandler?.(mockError);
+    } catch (error) {
       expect(error).toEqual(mockError);
     }
   });
@@ -370,7 +457,6 @@ describe('Test axios response interceptor', () => {
     try {
       await errorHandler?.(mockError);
     } catch (error) {
-      // eslint-disable-next-line jest/no-conditional-expect, jest/no-try-expect
       expect(error).toEqual(mockError);
     }
   });
@@ -402,9 +488,8 @@ describe('Test axios response interceptor', () => {
     try {
       await errorHandler?.(mockError);
     } catch (error) {
-      // eslint-disable-next-line jest/no-conditional-expect, jest/no-try-expect
       expect(error).toEqual(mockError);
-      // eslint-disable-next-line jest/no-conditional-expect, jest/no-try-expect
+
       expect(mockRefreshToken).toHaveBeenCalledTimes(0);
     }
   });

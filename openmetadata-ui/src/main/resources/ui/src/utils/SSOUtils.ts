@@ -11,7 +11,7 @@
  *  limitations under the License.
  */
 
-import Auth0Icon from '../assets/img/icon-auth0.png';
+import Auth0Icon from '../assets/img/icon-auth0.svg';
 import CognitoIcon from '../assets/img/icon-aws-cognito.png';
 import AzureIcon from '../assets/img/icon-azure.png';
 import GoogleIcon from '../assets/img/icon-google.png';
@@ -225,8 +225,8 @@ const navigateToTargetField = (
     current = current[part] as ErrorSchema;
   }
 
-  const targetKey = pathParts[pathParts.length - 1];
-  if (!current[targetKey]) {
+  const targetKey = pathParts.at(-1);
+  if (!targetKey || !current[targetKey]) {
     return null;
   }
 
@@ -294,6 +294,37 @@ export const clearFieldError = (
 };
 
 /**
+ * Provider-specific JWT principal claims defaults
+ * These are known-good claims that work with each provider
+ * Order matters - first matching claim is used for user identification
+ */
+const PROVIDER_JWT_PRINCIPAL_CLAIMS: Record<string, string[]> = {
+  [AuthProvider.Google]: ['email', 'preferred_username', 'sub'],
+  [AuthProvider.Azure]: ['preferred_username', 'email', 'upn', 'sub'],
+  [AuthProvider.Okta]: ['email', 'preferred_username', 'sub'],
+  [AuthProvider.Auth0]: ['email', 'name', 'sub'],
+  [AuthProvider.AwsCognito]: ['email', 'cognito:username', 'sub'],
+  [AuthProvider.CustomOidc]: ['email', 'preferred_username', 'sub'],
+  [AuthProvider.LDAP]: ['email', 'preferred_username', 'sub'],
+  [AuthProvider.Saml]: ['email', 'preferred_username', 'sub'],
+};
+
+/**
+ * Gets provider-specific JWT principal claims
+ * @param provider - The authentication provider
+ * @returns Array of claim names in priority order
+ */
+const getProviderJwtClaims = (provider: AuthProvider): string[] => {
+  return (
+    PROVIDER_JWT_PRINCIPAL_CLAIMS[provider] || [
+      'email',
+      'preferred_username',
+      'sub',
+    ]
+  );
+};
+
+/**
  * Gets default configuration values based on the selected provider
  * @param provider - The authentication provider
  * @param clientType - The client type (Public or Confidential)
@@ -324,7 +355,7 @@ export const getDefaultsForProvider = (
     callbackUrl: '',
     publicKeyUrls: [],
     tokenValidationAlgorithm: 'RS256',
-    jwtPrincipalClaims: [],
+    jwtPrincipalClaims: getProviderJwtClaims(provider),
     jwtPrincipalClaimsMapping: [],
     // Always include authority and publicKeyUrls for Google (required by backend)
     ...(isGoogle
@@ -340,8 +371,6 @@ export const getDefaultsForProvider = (
           publicKeyUrls: [],
           clientId: '',
           tokenValidationAlgorithm: 'RS256',
-          jwtPrincipalClaims: [],
-          jwtPrincipalClaimsMapping: [],
           samlConfiguration: {
             debugMode: false,
             idp: {
@@ -732,6 +761,7 @@ export const populateSamlIdpAuthority = (authConfig: SamlAuthConfig): void => {
 
 /**
  * Populates SAML SP callback URLs from root callbackUrl
+ * Only populates if the fields are empty (doesn't overwrite existing values from database)
  * @param authConfig - SAML authentication configuration
  */
 export const populateSamlSpCallback = (authConfig: SamlAuthConfig): void => {
@@ -739,8 +769,16 @@ export const populateSamlSpCallback = (authConfig: SamlAuthConfig): void => {
     return;
   }
 
-  authConfig.samlConfiguration.sp.callback = authConfig.callbackUrl;
-  authConfig.samlConfiguration.sp.acs = authConfig.callbackUrl;
+  // Only set callback if it's empty (don't overwrite existing database values)
+  if (!authConfig.samlConfiguration.sp.callback) {
+    authConfig.samlConfiguration.sp.callback = authConfig.callbackUrl;
+  }
+
+  // Only set acs if it's empty (don't overwrite existing database values)
+  // This preserves old URLs like /api/v1/saml/acs for existing users
+  if (!authConfig.samlConfiguration.sp.acs) {
+    authConfig.samlConfiguration.sp.acs = authConfig.callbackUrl;
+  }
 };
 
 /**
@@ -1044,4 +1082,143 @@ export const hasFieldValidationErrors = (
     typeof axiosError.response.data === 'object' &&
     'errors' in axiosError.response.data
   );
+};
+
+/**
+ * Creates a keydown event handler that prevents form submission when Enter is pressed in input fields
+ * This prevents array field tags from being removed when Enter is pressed in other fields
+ * @returns Event handler function for keydown events
+ */
+export const createFormKeyDownHandler = () => {
+  return (e: KeyboardEvent) => {
+    if (
+      e.key === 'Enter' &&
+      e.target &&
+      (e.target as HTMLElement).tagName !== 'TEXTAREA'
+    ) {
+      const target = e.target as HTMLElement;
+
+      if (
+        target.tagName === 'INPUT' ||
+        target.classList.contains('ant-input')
+      ) {
+        const isInSelectTags = target.closest('.ant-select-selector');
+        if (!isInSelectTags) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+      }
+    }
+  };
+};
+
+/**
+ * Result of parsing a SAML IdP metadata XML file.
+ */
+export interface SamlIdpMetadata {
+  entityId: string;
+  ssoLoginUrl: string;
+  idpX509Certificate: string;
+}
+
+const SAML_MD_NS = 'urn:oasis:names:tc:SAML:2.0:metadata';
+const XMLDSIG_NS = 'http://www.w3.org/2000/09/xmldsig#';
+
+/**
+ * Parses a SAML IdP federation metadata XML string and extracts
+ * entityId, ssoLoginUrl, and idpX509Certificate.
+ *
+ * Uses the browser's built-in DOMParser — no external dependencies.
+ */
+const SAML_REDIRECT_BINDING =
+  'urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect';
+const SAML_POST_BINDING = 'urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST';
+
+const resolveSsoLoginUrl = (
+  ssoServices: HTMLCollectionOf<Element>
+): string | null => {
+  let fallback: string | null = null;
+
+  // Prefer HTTP-Redirect binding, fall back to HTTP-POST
+  for (const ssoService of ssoServices) {
+    const binding = ssoService.getAttribute('Binding') ?? '';
+    const location = ssoService.getAttribute('Location');
+
+    if (binding === SAML_REDIRECT_BINDING && location) {
+      return location;
+    }
+    if (!fallback && binding === SAML_POST_BINDING && location) {
+      fallback = location;
+    }
+  }
+
+  return fallback;
+};
+
+const resolveX509Certificate = (
+  keyDescriptors: HTMLCollectionOf<Element>
+): string | undefined => {
+  let fallback: string | undefined;
+
+  for (const keyDescriptor of keyDescriptors) {
+    const use = keyDescriptor.getAttribute('use');
+    const x509 = keyDescriptor.getElementsByTagNameNS(
+      XMLDSIG_NS,
+      'X509Certificate'
+    )[0];
+
+    if (use === 'signing' && x509?.textContent) {
+      return x509.textContent.replaceAll(/\s+/g, '');
+    }
+    if (!use && !fallback && x509?.textContent) {
+      fallback = x509.textContent.replaceAll(/\s+/g, '');
+    }
+  }
+
+  return fallback;
+};
+
+export const parseSamlMetadataXml = (xmlString: string): SamlIdpMetadata => {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(xmlString, 'application/xml');
+
+  if (doc.querySelector('parsererror')) {
+    throw new Error('Invalid XML: the file could not be parsed.');
+  }
+
+  const entityId = doc
+    .getElementsByTagNameNS(SAML_MD_NS, 'EntityDescriptor')[0]
+    ?.getAttribute('entityID');
+
+  if (!entityId) {
+    throw new Error(
+      'Invalid metadata: missing entityID on EntityDescriptor element.'
+    );
+  }
+
+  const ssoLoginUrl = resolveSsoLoginUrl(
+    doc.getElementsByTagNameNS(SAML_MD_NS, 'SingleSignOnService')
+  );
+
+  if (!ssoLoginUrl) {
+    throw new Error(
+      'Invalid metadata: no SingleSignOnService element with a Location attribute found.'
+    );
+  }
+
+  const certText = resolveX509Certificate(
+    doc.getElementsByTagNameNS(SAML_MD_NS, 'KeyDescriptor')
+  );
+
+  if (!certText) {
+    throw new Error(
+      'Invalid metadata: no X509Certificate found. A signing certificate is required.'
+    );
+  }
+
+  return {
+    entityId,
+    ssoLoginUrl,
+    idpX509Certificate: `-----BEGIN CERTIFICATE-----\n${certText}\n-----END CERTIFICATE-----`,
+  };
 };

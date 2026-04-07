@@ -56,8 +56,8 @@ public interface SearchIndex {
           "connection",
           "changeSummary");
 
-  public static final SearchClient searchClient = Entity.getSearchRepository().getSearchClient();
-  static final Logger LOG = LoggerFactory.getLogger(SearchIndex.class);
+  SearchClient searchClient = Entity.getSearchRepository().getSearchClient();
+  Logger LOG = LoggerFactory.getLogger(SearchIndex.class);
 
   default Map<String, Object> buildSearchIndexDoc() {
     // Build Index Doc
@@ -100,7 +100,17 @@ public interface SearchIndex {
             ? entity.getDisplayName()
             : entity.getName());
     map.put("entityType", entityType);
-    map.put("owners", getEntitiesWithDisplayName(entity.getOwners()));
+    List<EntityReference> ownersList = getEntitiesWithDisplayName(entity.getOwners());
+    map.put("owners", ownersList);
+    map.put(
+        "ownerDisplayName",
+        ownersList.stream()
+            .map(EntityReference::getDisplayName)
+            .filter(n -> !nullOrEmpty(n))
+            .toList());
+    map.put(
+        "ownerName",
+        ownersList.stream().map(EntityReference::getName).filter(n -> !nullOrEmpty(n)).toList());
     map.put("domains", getEntitiesWithDisplayName(entity.getDomains()));
     map.put("reviewers", getEntitiesWithDisplayName(entity.getReviewers()));
     map.put("followers", SearchIndexUtils.parseFollowers(entity.getFollowers()));
@@ -137,6 +147,11 @@ public interface SearchIndex {
     TagLabel tierTag = new ParseTags(Entity.getEntityTags(entityType, entity)).getTierTag();
     map.put("tier", tierTag);
     map.put("certification", entity.getCertification());
+
+    map.put(
+        "customPropertiesTyped",
+        SearchIndexUtils.buildTypedCustomProperties(entity.getExtension(), entityType));
+
     return map;
   }
 
@@ -194,12 +209,23 @@ public interface SearchIndex {
       EntityReference entity, List<CollectionDAO.EntityRelationshipRecord> records) {
     List<EsLineageData> data = new ArrayList<>();
     for (CollectionDAO.EntityRelationshipRecord entityRelationshipRecord : records) {
-      EntityReference ref =
-          Entity.getEntityReferenceById(
-              entityRelationshipRecord.getType(), entityRelationshipRecord.getId(), Include.ALL);
-      LineageDetails lineageDetails =
-          JsonUtils.readValue(entityRelationshipRecord.getJson(), LineageDetails.class);
-      data.add(buildEntityLineageData(ref, entity, lineageDetails));
+      try {
+        EntityReference ref =
+            Entity.getEntityReferenceById(
+                entityRelationshipRecord.getType(), entityRelationshipRecord.getId(), Include.ALL);
+        LineageDetails lineageDetails =
+            JsonUtils.readValue(entityRelationshipRecord.getJson(), LineageDetails.class);
+        data.add(buildEntityLineageData(ref, entity, lineageDetails));
+      } catch (EntityNotFoundException ex) {
+        // Upstream entity was deleted but lineage relationship still exists
+        // Skip this lineage edge gracefully to prevent search indexing failure
+        LOG.warn(
+            "Upstream entity '{}' (ID: {}) not found for entity '{}'. Skipping lineage edge. Error: {}",
+            entityRelationshipRecord.getType(),
+            entityRelationshipRecord.getId(),
+            entity.getFullyQualifiedName(),
+            ex.getMessage());
+      }
     }
     return data;
   }
@@ -259,7 +285,12 @@ public interface SearchIndex {
           }
 
           columnIndex++;
-        } catch (EntityNotFoundException ignored) {
+        } catch (EntityNotFoundException ex) {
+          LOG.warn(
+              "Related table [{}] not found for upstream entity relationship of [{}]: {}",
+              relatedEntityFQN,
+              entity.getFullyQualifiedName(),
+              ex.getMessage());
         }
       }
     }

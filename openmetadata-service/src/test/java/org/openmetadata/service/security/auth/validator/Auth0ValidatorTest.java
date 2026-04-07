@@ -1,15 +1,22 @@
 package org.openmetadata.service.security.auth.validator;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mockStatic;
 
 import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.MockedStatic;
 import org.openmetadata.schema.api.security.AuthenticationConfiguration;
 import org.openmetadata.schema.api.security.ClientType;
 import org.openmetadata.schema.security.client.OidcClientConfig;
 import org.openmetadata.schema.system.FieldError;
+import org.openmetadata.service.util.ValidationErrorBuilder;
+import org.openmetadata.service.util.ValidationHttpUtil;
 
 public class Auth0ValidatorTest {
   private Auth0Validator validator;
@@ -33,8 +40,8 @@ public class Auth0ValidatorTest {
 
     FieldError result = validator.validateAuth0Configuration(authConfig, oidcConfig);
 
-    assertTrue(result != null);
-    assertTrue(result.getField() != null);
+    assertNotNull(result);
+    assertNotNull(result.getField());
     assertTrue(result.getError().contains("Domain validation failed"));
   }
 
@@ -49,8 +56,8 @@ public class Auth0ValidatorTest {
     FieldError result = validator.validateAuth0Configuration(authConfig, oidcConfig);
 
     // Should fail - either on domain validation or public key URLs
-    assertTrue(result != null);
-    assertTrue(result.getField() != null);
+    assertNotNull(result);
+    assertNotNull(result.getField());
   }
 
   @Test
@@ -83,7 +90,7 @@ public class Auth0ValidatorTest {
 
     FieldError result = validator.validateAuth0Configuration(authConfig, oidcConfig);
 
-    assertTrue(result != null);
+    assertNotNull(result);
     assertTrue(
         result.getError().contains("Auth0 domain") || result.getError().contains("discoveryUri"));
   }
@@ -105,8 +112,8 @@ public class Auth0ValidatorTest {
     FieldError result = validator.validateAuth0Configuration(authConfig, oidcConfig);
 
     // Should fail on network calls
-    assertTrue(result != null);
-    assertTrue(result.getField() != null);
+    assertNotNull(result);
+    assertNotNull(result.getField());
   }
 
   @Test
@@ -126,7 +133,7 @@ public class Auth0ValidatorTest {
     FieldError result = validator.validateAuth0Configuration(authConfig, oidcConfig);
 
     // Should fail due to missing or invalid credentials
-    assertTrue(result != null);
+    assertNotNull(result);
   }
 
   @Test
@@ -142,7 +149,70 @@ public class Auth0ValidatorTest {
 
     FieldError result = validator.validateAuth0Configuration(authConfig, oidcConfig);
 
-    assertTrue(result != null);
-    assertTrue(result.getField() != null);
+    assertNotNull(result);
+    assertNotNull(result.getField());
+  }
+
+  @Test
+  void testValidateClientCredentials_AccessDeniedError_MapsToDiscoveryUri() {
+    String auth0Domain = "https://dev-example.auth0.com";
+    String mockDiscoveryResponse =
+        "{"
+            + "\"issuer\": \"https://dev-example.auth0.com/\","
+            + "\"authorization_endpoint\": \"https://dev-example.auth0.com/authorize\","
+            + "\"token_endpoint\": \"https://dev-example.auth0.com/oauth/token\","
+            + "\"userinfo_endpoint\": \"https://dev-example.auth0.com/userinfo\","
+            + "\"jwks_uri\": \"https://dev-example.auth0.com/.well-known/jwks.json\","
+            + "\"scopes_supported\": [\"openid\", \"email\", \"profile\"],"
+            + "\"response_types_supported\": [\"code\"],"
+            + "\"token_endpoint_auth_methods_supported\": [\"client_secret_basic\"],"
+            + "\"id_token_signing_alg_values_supported\": [\"RS256\"]"
+            + "}";
+
+    String mockTokenErrorResponse =
+        "{"
+            + "\"error\": \"access_denied\","
+            + "\"error_description\": \"Service not enabled within domain: https://dev-example.auth0.com/api/v2/\""
+            + "}";
+
+    authConfig.setClientType(ClientType.CONFIDENTIAL);
+    oidcConfig.setDiscoveryUri(auth0Domain + "/.well-known/openid-configuration");
+    oidcConfig.setId("test-client-id");
+    oidcConfig.setSecret("test-client-secret");
+    oidcConfig.setCallbackUrl("http://localhost:8585/callback");
+    oidcConfig.setScope("openid email profile");
+
+    try (MockedStatic<ValidationHttpUtil> mockedHttp = mockStatic(ValidationHttpUtil.class)) {
+      ValidationHttpUtil.HttpResponseData discoveryResponse =
+          new ValidationHttpUtil.HttpResponseData(200, mockDiscoveryResponse);
+      ValidationHttpUtil.HttpResponseData tokenErrorResponse =
+          new ValidationHttpUtil.HttpResponseData(403, mockTokenErrorResponse);
+
+      mockedHttp.when(() -> ValidationHttpUtil.safeGet(anyString())).thenReturn(discoveryResponse);
+
+      mockedHttp
+          .when(
+              () ->
+                  ValidationHttpUtil.postForm(
+                      anyString(), anyString(), org.mockito.ArgumentMatchers.any()))
+          .thenReturn(tokenErrorResponse);
+      mockedHttp
+          .when(() -> ValidationHttpUtil.postForm(anyString(), anyString()))
+          .thenReturn(tokenErrorResponse);
+
+      FieldError result = validator.validateAuth0Configuration(authConfig, oidcConfig);
+
+      assertNotNull(result);
+      assertEquals(
+          ValidationErrorBuilder.FieldPaths.OIDC_DISCOVERY_URI,
+          result.getField(),
+          "access_denied should map to OIDC_DISCOVERY_URI, not OIDC_CLIENT_SECRET");
+      assertTrue(
+          result.getError().contains("Service not enabled"),
+          "Error message should contain the actual error description");
+      assertTrue(
+          result.getError().contains("Access denied"),
+          "Error message should indicate access denied");
+    }
   }
 }

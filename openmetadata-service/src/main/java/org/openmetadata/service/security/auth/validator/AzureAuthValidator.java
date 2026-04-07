@@ -61,12 +61,7 @@ public class AzureAuthValidator {
         return clientIdValidation;
       }
 
-      FieldError publicKeyValidation = validatePublicKeyUrls(authConfig, tenantId);
-      if (publicKeyValidation != null) {
-        return publicKeyValidation;
-      }
-
-      return null;
+      return validatePublicKeyUrls(authConfig, tenantId);
     } catch (Exception e) {
       LOG.error("Azure public client validation failed", e);
       return ValidationErrorBuilder.createFieldError(
@@ -137,7 +132,7 @@ public class AzureAuthValidator {
         return tenantValidation;
       }
 
-      // Then validate against the discovery document
+      // Validate against the discovery document
       FieldError discoveryCheck =
           discoveryValidator.validateAgainstDiscovery(discoveryUri, authConfig, oidcConfig);
       if (discoveryCheck != null) {
@@ -155,13 +150,7 @@ public class AzureAuthValidator {
         return publicKeyValidation;
       }
 
-      FieldError credentialsValidation =
-          validateClientCredentials(tenantId, oidcConfig.getId(), oidcConfig.getSecret());
-      if (credentialsValidation != null) {
-        return credentialsValidation;
-      }
-
-      return null;
+      return validateClientCredentials(tenantId, oidcConfig.getId(), oidcConfig.getSecret());
     } catch (Exception e) {
       LOG.error("Azure confidential client validation failed", e);
       return ValidationErrorBuilder.createFieldError("", "Failed azure confidential validation");
@@ -306,6 +295,11 @@ public class AzureAuthValidator {
   }
 
   private FieldError validatePublicClientId(String tenantId, String clientId) {
+    if (!isValidGuid(clientId)) {
+      return ValidationErrorBuilder.createFieldError(
+          ValidationErrorBuilder.FieldPaths.AUTH_CLIENT_ID,
+          "Invalid Azure client ID format. Must be a valid GUID");
+    }
     return validateClientIdViaTokenEndpoint(tenantId, clientId, "azure-public-client-id", "public");
   }
 
@@ -357,9 +351,11 @@ public class AzureAuthValidator {
       AuthenticationConfiguration authConfig, String tenantId) {
     try {
       List<String> publicKeyUrls = authConfig.getPublicKeyUrls();
+      // Skip validation if publicKeyUrls is empty - it's auto-populated for confidential clients
       if (publicKeyUrls == null || publicKeyUrls.isEmpty()) {
-        return ValidationErrorBuilder.createFieldError(
-            ValidationErrorBuilder.FieldPaths.AUTH_PUBLIC_KEY_URLS, "Public key urls are required");
+        LOG.debug(
+            "publicKeyUrls is empty, skipping validation (auto-populated for confidential clients)");
+        return null;
       }
 
       String expectedJwksUrl = AZURE_LOGIN_BASE + "/" + tenantId + "/discovery/v2.0/keys";

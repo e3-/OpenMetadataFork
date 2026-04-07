@@ -54,7 +54,8 @@ public class CreateIngestionPipelineDelegate implements JavaDelegate {
                   varHandler.getNamespacedVariable(
                       inputNamespaceMap.get(RELATED_ENTITY_VARIABLE), RELATED_ENTITY_VARIABLE));
 
-      ServiceEntityInterface service = Entity.getEntity(entityLink, "owners", Include.NON_DELETED);
+      ServiceEntityInterface service =
+          Entity.getEntity(entityLink, "owners,ingestionRunner", Include.NON_DELETED);
 
       CreateIngestionPipelineImpl.CreateIngestionPipelineResult result =
           new CreateIngestionPipelineImpl(mapper, pipelineServiceClient)
@@ -69,9 +70,7 @@ public class CreateIngestionPipelineDelegate implements JavaDelegate {
 
     } catch (Exception exc) {
       LOG.error(
-          String.format(
-              "[%s] Failure: ", getProcessDefinitionKeyFromId(execution.getProcessDefinitionId())),
-          exc);
+          "[{}] Failure: ", getProcessDefinitionKeyFromId(execution.getProcessDefinitionId()), exc);
       varHandler.setGlobalVariable(EXCEPTION_VARIABLE, ExceptionUtils.getStackTrace(exc));
       throw new BpmnError(WORKFLOW_RUNTIME_EXCEPTION, exc.getMessage());
     }

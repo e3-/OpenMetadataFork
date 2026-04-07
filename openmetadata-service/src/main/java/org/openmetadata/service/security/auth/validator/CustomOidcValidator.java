@@ -63,12 +63,8 @@ public class CustomOidcValidator {
         return jwksValidation;
       }
 
-      FieldError flowValidation = validateAuthorizationFlow(endpoints, authConfig);
-      if (flowValidation != null) {
-        return flowValidation;
-      }
-
-      return null; // Success - Custom OIDC public client validated
+      return validateAuthorizationFlow(
+          endpoints, authConfig); // Success - Custom OIDC public client validated
 
     } catch (Exception e) {
       LOG.error("Custom OIDC public client validation failed", e);
@@ -117,15 +113,11 @@ public class CustomOidcValidator {
             "Client Secret is required for confidential clients");
       }
 
-      FieldError credentialsValidation =
-          validateClientCredentialsWithTokenExchange(
-              endpoints.tokenEndpoint, oidcConfig.getId(), oidcConfig.getSecret(), oidcConfig);
-
-      if (credentialsValidation != null) {
-        return credentialsValidation;
-      }
-
-      return null; // Success - Custom OIDC confidential client validated
+      return validateClientCredentialsWithTokenExchange(
+          endpoints.tokenEndpoint,
+          oidcConfig.getId(),
+          oidcConfig.getSecret(),
+          oidcConfig); // Success - Custom OIDC confidential client validated
 
     } catch (Exception e) {
       LOG.error("Custom OIDC confidential client validation failed", e);
@@ -213,7 +205,7 @@ public class CustomOidcValidator {
 
       // Validate it's a proper JWKS format
       JsonNode jwks = JsonUtils.readTree(response.getBody());
-      if (!jwks.has("keys") || !jwks.get("keys").isArray() || jwks.get("keys").size() == 0) {
+      if (!jwks.has("keys") || !jwks.get("keys").isArray() || jwks.get("keys").isEmpty()) {
         return ValidationErrorBuilder.createFieldError(
             ValidationErrorBuilder.FieldPaths.AUTH_PUBLIC_KEY_URLS,
             "JWKS endpoint returned invalid or empty keys");
@@ -221,10 +213,11 @@ public class CustomOidcValidator {
 
       // Verify publicKeyUrls is configured and contains the JWKS URI
       List<String> publicKeyUrls = authConfig.getPublicKeyUrls();
+      // Skip validation if publicKeyUrls is empty - it's auto-populated for confidential clients
       if (publicKeyUrls == null || publicKeyUrls.isEmpty()) {
-        return ValidationErrorBuilder.createFieldError(
-            ValidationErrorBuilder.FieldPaths.AUTH_PUBLIC_KEY_URLS,
-            "publicKeyUrls is required. Please configure it with the JWKS URI: " + jwksUri);
+        LOG.debug(
+            "publicKeyUrls is empty, skipping validation (auto-populated for confidential clients)");
+        return null;
       }
 
       // Check if the JWKS URI from discovery is in publicKeyUrls

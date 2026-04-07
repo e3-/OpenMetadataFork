@@ -45,6 +45,7 @@ import { calculatePercentageFromValue } from './CommonUtils';
 import { getEntityName } from './EntityUtils';
 import { VersionStatus } from './EntityVersionUtils.interface';
 import Fqn from './Fqn';
+import i18n from './i18next/LocalUtil';
 import { getGlossaryPath } from './RouterUtils';
 
 export const buildTree = (data: GlossaryTerm[]): GlossaryTerm[] => {
@@ -235,7 +236,8 @@ export const findItemByFqn = (
 export const convertGlossaryTermsToTreeOptions = (
   options: ModifiedGlossaryTerm[] = [],
   level = 0,
-  allowParentSelection = false
+  allowParentSelection = false,
+  parentMutuallyExclusive = false
 ): Omit<DefaultOptionType, 'label'>[] => {
   const treeData = options.map((option) => {
     const hasChildren = 'children' in option && !isEmpty(option?.children);
@@ -257,12 +259,14 @@ export const convertGlossaryTermsToTreeOptions = (
       checkable: allowParentSelection || isGlossaryTerm,
       isLeaf: isGlossaryTerm ? !hasChildren : false,
       selectable: allowParentSelection || isGlossaryTerm,
+      isParentMutuallyExclusive: parentMutuallyExclusive,
       children:
         hasChildren &&
         convertGlossaryTermsToTreeOptions(
           option.children as ModifiedGlossaryTerm[],
           level + 1,
-          allowParentSelection
+          allowParentSelection,
+          option.mutuallyExclusive === true
         ),
     };
   });
@@ -475,13 +479,17 @@ export const permissionForApproveOrReject = (
   const taskThread = termTaskThreads[entityLink]?.find(
     (thread) => thread.about === entityLink
   );
+  const currentUserId = currentUser?.id;
 
   const isReviewer = record.reviewers?.some(
-    (reviewer) => reviewer.id === currentUser?.id
+    (reviewer) => reviewer.id === currentUserId
+  );
+  const isTaskAssignee = taskThread?.task?.assignees?.some(
+    (assignee) => assignee.id === currentUserId
   );
 
   return {
-    permission: taskThread && isReviewer,
+    permission: Boolean(taskThread && (isTaskAssignee || isReviewer)),
     taskId: taskThread?.task?.id ?? '',
   };
 };
@@ -520,4 +528,25 @@ export const getAllExpandableKeys = (terms: ModifiedGlossary[]): string[] => {
   processTerms(terms, keys);
 
   return keys;
+};
+
+export const validateReferenceURL = (url: string): boolean => {
+  if (!url) {
+    return true;
+  }
+
+  return url.startsWith('http://') || url.startsWith('https://');
+};
+
+export const referenceURLValidator = (
+  _: unknown,
+  value: string
+): Promise<void> => {
+  if (validateReferenceURL(value)) {
+    return Promise.resolve();
+  }
+
+  return Promise.reject(
+    new Error(i18n.t('message.url-must-start-with-http-or-https'))
+  );
 };

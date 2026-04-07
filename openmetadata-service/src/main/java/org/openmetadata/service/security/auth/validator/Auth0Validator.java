@@ -43,28 +43,13 @@ public class Auth0Validator {
         return domainValidation;
       }
 
-      // Validate against OIDC discovery document for public clients too
-      String discoveryUri = authority + AUTH0_WELL_KNOWN_PATH;
-      OidcClientConfig publicClientConfig =
-          new OidcClientConfig().withId(authConfig.getClientId()).withDiscoveryUri(discoveryUri);
-
-      FieldError discoveryCheck =
-          discoveryValidator.validateAgainstDiscovery(discoveryUri, authConfig, publicClientConfig);
-      if (discoveryCheck != null) {
-        return discoveryCheck;
-      }
-
       FieldError clientIdValidation = validatePublicClientId(authority, authConfig.getClientId());
       if (clientIdValidation != null) {
         return clientIdValidation;
       }
 
-      FieldError publicKeyValidation = validatePublicKeyUrls(authConfig, authority);
-      if (publicKeyValidation != null) {
-        return publicKeyValidation;
-      }
-
-      return null; // Success - Auth0 public client validated
+      return validatePublicKeyUrls(
+          authConfig, authority); // Success - Auth0 public client validated
     } catch (Exception e) {
       LOG.error("Auth0 public client validation failed", e);
       return ValidationErrorBuilder.createFieldError(
@@ -96,14 +81,11 @@ public class Auth0Validator {
         return publicKeyValidation;
       }
 
-      FieldError credentialsValidation =
-          validateClientCredentials(
-              auth0Domain, oidcConfig.getId(), oidcConfig.getSecret(), oidcConfig.getCallbackUrl());
-      if (credentialsValidation != null) {
-        return credentialsValidation;
-      }
-
-      return null; // Success - Auth0 confidential client validated
+      return validateClientCredentials(
+          auth0Domain,
+          oidcConfig.getId(),
+          oidcConfig.getSecret(),
+          oidcConfig.getCallbackUrl()); // Success - Auth0 confidential client validated
     } catch (Exception e) {
       LOG.error("Auth0 confidential client validation failed", e);
       return ValidationErrorBuilder.createFieldError(
@@ -210,11 +192,13 @@ public class Auth0Validator {
           String error = errorResponse.path("error").asText();
           String errorDescription = errorResponse.path("error_description").asText();
 
-          if ("invalid_client".equals(error)
-              || "unauthorized_client".equals(error)
-              || "access_denied".equals(error)) {
+          if ("invalid_client".equals(error) || "unauthorized_client".equals(error)) {
             return ValidationErrorBuilder.createFieldError(
                 ValidationErrorBuilder.FieldPaths.OIDC_CLIENT_SECRET, "Invalid client secret");
+          } else if ("access_denied".equals(error)) {
+            return ValidationErrorBuilder.createFieldError(
+                ValidationErrorBuilder.FieldPaths.OIDC_DISCOVERY_URI,
+                "Access denied: " + errorDescription);
           } else {
             return ValidationErrorBuilder.createFieldError(
                 ValidationErrorBuilder.FieldPaths.OIDC_CLIENT_SECRET,
@@ -285,10 +269,11 @@ public class Auth0Validator {
       AuthenticationConfiguration authConfig, String auth0Domain) {
     try {
       List<String> publicKeyUrls = authConfig.getPublicKeyUrls();
+      // Skip validation if publicKeyUrls is empty - it's auto-populated for confidential clients
       if (publicKeyUrls == null || publicKeyUrls.isEmpty()) {
-        return ValidationErrorBuilder.createFieldError(
-            ValidationErrorBuilder.FieldPaths.AUTH_PUBLIC_KEY_URLS,
-            "Public key URLs are required for Auth0 clients");
+        LOG.debug(
+            "publicKeyUrls is empty, skipping validation (auto-populated for confidential clients)");
+        return null;
       }
 
       String expectedJwksUrl = auth0Domain + "/.well-known/jwks.json";
@@ -334,7 +319,7 @@ public class Auth0Validator {
                 ValidationErrorBuilder.FieldPaths.AUTH_PUBLIC_KEY_URLS,
                 "Invalid JWKS format. Expected JSON with 'keys' array at: " + urlStr);
           }
-          if (jwks.has("keys") && jwks.get("keys").size() == 0) {
+          if (jwks.has("keys") && jwks.get("keys").isEmpty()) {
             return ValidationErrorBuilder.createFieldError(
                 ValidationErrorBuilder.FieldPaths.AUTH_PUBLIC_KEY_URLS,
                 "JWKS endpoint returned empty keys array: " + urlStr);

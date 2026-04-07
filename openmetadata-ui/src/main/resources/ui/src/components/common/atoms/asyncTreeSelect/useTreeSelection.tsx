@@ -11,7 +11,7 @@
  *  limitations under the License.
  */
 
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { TreeNode, TreeSelectionState } from './types';
 
 interface UseTreeSelectionOptions<T> {
@@ -25,13 +25,14 @@ interface UseTreeSelectionOptions<T> {
 export const useTreeSelection = <T = unknown,>({
   multiple = false,
   cascadeSelection = false,
-  // defaultSelected = [], // TODO: Implement proper defaultSelected handling with Map
+  defaultSelected = [],
   treeData,
   onSelectionChange,
 }: UseTreeSelectionOptions<T>): TreeSelectionState<T> => {
   const [selectedNodes, setSelectedNodes] = useState<Map<string, TreeNode<T>>>(
     new Map()
   );
+  const [isInitialized, setIsInitialized] = useState(false);
 
   const findNodeById = useCallback(
     (nodeId: string, nodes: TreeNode<T>[]): TreeNode<T> | null => {
@@ -51,6 +52,25 @@ export const useTreeSelection = <T = unknown,>({
     },
     []
   );
+
+  // Initialize selection from defaultSelected when treeData is available
+  useEffect(() => {
+    if (!isInitialized && defaultSelected.length > 0 && treeData.length > 0) {
+      const initialSelection = new Map<string, TreeNode<T>>();
+
+      defaultSelected.forEach((nodeId) => {
+        const node = findNodeById(nodeId, treeData);
+        if (node) {
+          initialSelection.set(nodeId, node);
+        }
+      });
+
+      if (initialSelection.size > 0) {
+        setSelectedNodes(initialSelection);
+        setIsInitialized(true);
+      }
+    }
+  }, [defaultSelected, treeData, findNodeById, isInitialized]);
 
   const getAllChildrenIds = useCallback((node: TreeNode<T>): string[] => {
     const ids: string[] = [node.id];
@@ -84,13 +104,33 @@ export const useTreeSelection = <T = unknown,>({
   );
 
   const toggleNodeSelection = useCallback(
-    (node: TreeNode<T>) => {
+    (node: TreeNode<T>, parentNode?: TreeNode<T>) => {
       const newSelectedNodes = new Map(selectedNodes);
       const nodeId = node.id;
       const isSelected = selectedNodes.has(nodeId);
 
       if (multiple) {
-        if (cascadeSelection) {
+        // Check if this is a radio button node (mutually exclusive)
+        if (node.isParentMutuallyExclusive === true) {
+          // Find parent and remove all sibling selections
+          // If parentNode is passed, use it directly (O(1))
+          // Otherwise fall back to getParentNode (O(N))
+          const parent = parentNode || getParentNode(nodeId, treeData);
+          if (parent?.children) {
+            parent.children.forEach((sibling) => {
+              if (sibling.id !== nodeId) {
+                newSelectedNodes.delete(sibling.id);
+              }
+            });
+          }
+
+          // Then toggle this node
+          if (!isSelected) {
+            newSelectedNodes.set(nodeId, node);
+          } else {
+            newSelectedNodes.delete(nodeId);
+          }
+        } else if (cascadeSelection) {
           // Cascade selection mode: select/deselect node and all children
           if (isSelected) {
             // Deselect node and all children
@@ -114,13 +154,11 @@ export const useTreeSelection = <T = unknown,>({
 
           // Update parent selection state - simplified for now
           // TODO: Implement cascade parent logic with Map
-        } else {
+        } else if (isSelected) {
           // Independent selection mode: only toggle the clicked node
-          if (isSelected) {
-            newSelectedNodes.delete(nodeId);
-          } else {
-            newSelectedNodes.set(nodeId, node);
-          }
+          newSelectedNodes.delete(nodeId);
+        } else {
+          newSelectedNodes.set(nodeId, node);
         }
       } else {
         // Single selection mode

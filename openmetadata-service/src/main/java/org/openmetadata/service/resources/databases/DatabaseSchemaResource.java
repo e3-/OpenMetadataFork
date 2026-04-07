@@ -58,6 +58,7 @@ import org.openmetadata.schema.type.DatabaseSchemaProfilerConfig;
 import org.openmetadata.schema.type.EntityHistory;
 import org.openmetadata.schema.type.Include;
 import org.openmetadata.schema.type.MetadataOperation;
+import org.openmetadata.schema.type.RegexMode;
 import org.openmetadata.schema.type.csv.CsvImportResult;
 import org.openmetadata.schema.utils.ResultList;
 import org.openmetadata.service.Entity;
@@ -81,7 +82,7 @@ import org.openmetadata.service.util.CSVExportResponse;
 public class DatabaseSchemaResource
     extends EntityResource<DatabaseSchema, DatabaseSchemaRepository> {
   private final DatabaseSchemaMapper mapper = new DatabaseSchemaMapper();
-  public static final String COLLECTION_PATH = "v1/databaseSchemas/";
+  public static final String COLLECTION_PATH = "/v1/databaseSchemas/";
   static final String FIELDS =
       "owners,tables,usageSummary,tags,certification,extension,domains,sourceHash,followers";
 
@@ -139,6 +140,12 @@ public class DatabaseSchemaResource
               schema = @Schema(type = "string", example = "customerDatabase"))
           @QueryParam("database")
           String databaseParam,
+      @Parameter(
+              description =
+                  "Filter schemas by regex pattern applied to the schema `name` by default. To apply the regex to the fullyQualifiedName instead, set `regexFilterByFqn=true`. For better performance use in combination with the `database` query filter.",
+              schema = @Schema(type = "string", example = "finance_.*"))
+          @QueryParam("databaseSchemaRegex")
+          String databaseSchemaParamRegex,
       @Parameter(description = "Limit the number schemas returned. (1 to 1000000, default = 10)")
           @DefaultValue("10")
           @QueryParam("limit")
@@ -160,8 +167,32 @@ public class DatabaseSchemaResource
               schema = @Schema(implementation = Include.class))
           @QueryParam("include")
           @DefaultValue("non-deleted")
-          Include include) {
+          Include include,
+      @Parameter(
+              description =
+                  "When true, regex filters match against fullyQualifiedName instead of name. Default is false.",
+              schema = @Schema(type = "boolean", example = "false"))
+          @QueryParam("regexFilterByFqn")
+          @DefaultValue("false")
+          boolean regexFilterByFqn,
+      @Parameter(
+              description =
+                  "Controls how regex filters are applied. 'include' returns matching entities, 'exclude' returns non-matching entities. Default is 'include'.",
+              schema = @Schema(implementation = RegexMode.class))
+          @QueryParam("regexMode")
+          @DefaultValue("include")
+          RegexMode regexMode) {
     ListFilter filter = new ListFilter(include).addQueryParam("database", databaseParam);
+    if (regexFilterByFqn) {
+      filter.addQueryParam("regexFilterByFqn", true);
+    }
+    if (regexMode != null) {
+      filter.addQueryParam("regexMode", regexMode.value());
+    }
+    if (databaseSchemaParamRegex != null) {
+      filter.addQueryParam("databaseSchemaRegex", databaseSchemaParamRegex);
+      filter.addQueryParam("databaseSchemaRegexField", "name");
+    }
     return listInternal(uriInfo, securityContext, fieldsParam, filter, limitParam, before, after);
   }
 
@@ -221,8 +252,17 @@ public class DatabaseSchemaResource
               schema = @Schema(implementation = Include.class))
           @QueryParam("include")
           @DefaultValue("non-deleted")
-          Include include) {
-    return getInternal(uriInfo, securityContext, id, fieldsParam, include);
+          Include include,
+      @Parameter(
+              description =
+                  "Per-relation include control. Format: field:value,field2:value2. "
+                      + "Example: owners:non-deleted,followers:all. "
+                      + "Valid values: all, deleted, non-deleted. "
+                      + "If not specified for a field, uses the entity's include value.",
+              schema = @Schema(type = "string", example = "owners:non-deleted,followers:all"))
+          @QueryParam("includeRelations")
+          String includeRelations) {
+    return getInternal(uriInfo, securityContext, id, fieldsParam, include, includeRelations);
   }
 
   @GET
@@ -261,8 +301,17 @@ public class DatabaseSchemaResource
               schema = @Schema(implementation = Include.class))
           @QueryParam("include")
           @DefaultValue("non-deleted")
-          Include include) {
-    return getByNameInternal(uriInfo, securityContext, fqn, fieldsParam, include);
+          Include include,
+      @Parameter(
+              description =
+                  "Per-relation include control. Format: field:value,field2:value2. "
+                      + "Example: owners:non-deleted,followers:all. "
+                      + "Valid values: all, deleted, non-deleted. "
+                      + "If not specified for a field, uses the entity's include value.",
+              schema = @Schema(type = "string", example = "owners:non-deleted,followers:all"))
+          @QueryParam("includeRelations")
+          String includeRelations) {
+    return getByNameInternal(uriInfo, securityContext, fqn, fieldsParam, include, includeRelations);
   }
 
   @GET
@@ -585,6 +634,7 @@ public class DatabaseSchemaResource
                     schema = @Schema(implementation = CsvImportResult.class)))
       })
   public CsvImportResult importCsv(
+      @Context UriInfo uriInfo,
       @Context SecurityContext securityContext,
       @Parameter(description = "Name of the Database schema", schema = @Schema(type = "string"))
           @PathParam("name")
@@ -602,7 +652,7 @@ public class DatabaseSchemaResource
           boolean recursive,
       String csv)
       throws IOException {
-    return importCsvInternal(securityContext, name, csv, dryRun, recursive);
+    return importCsvInternal(uriInfo, securityContext, name, csv, dryRun, recursive);
   }
 
   @PUT
@@ -624,6 +674,7 @@ public class DatabaseSchemaResource
                     schema = @Schema(implementation = CsvImportResult.class)))
       })
   public Response importCsvAsync(
+      @Context UriInfo uriInfo,
       @Context SecurityContext securityContext,
       @Parameter(description = "Name of the Database schema", schema = @Schema(type = "string"))
           @PathParam("name")
@@ -640,7 +691,7 @@ public class DatabaseSchemaResource
           @QueryParam("recursive")
           boolean recursive,
       String csv) {
-    return importCsvInternalAsync(securityContext, name, csv, dryRun, recursive);
+    return importCsvInternalAsync(uriInfo, securityContext, name, csv, dryRun, recursive);
   }
 
   @PUT

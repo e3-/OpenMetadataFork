@@ -10,17 +10,11 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
+import { Tooltip, TooltipTrigger } from '@openmetadata/ui-core-components';
 import { Typography } from 'antd';
-import {
-  compact,
-  get,
-  isEmpty,
-  isString,
-  isUndefined,
-  startCase,
-} from 'lodash';
-import { parse } from 'papaparse';
-import { Column } from 'react-data-grid';
+import { isEmpty, isString, isUndefined, startCase } from 'lodash';
+import { parse, unparse } from 'papaparse';
+import { Column, RenderCellProps } from 'react-data-grid';
 import { ReactComponent as SuccessBadgeIcon } from '../..//assets/svg/success-badge.svg';
 import { ReactComponent as FailBadgeIcon } from '../../assets/svg/fail-badge.svg';
 import { TableTypePropertyValueType } from '../../components/common/CustomPropertyTable/CustomPropertyTable.interface';
@@ -59,7 +53,15 @@ export const COLUMNS_WIDTH: Record<string, number> = {
   fullyQualifiedName: 300,
   tiers: 120,
   status: 70,
+  parameterValues: 300,
 };
+
+export const CSV_DISABLED_COLUMNS = [
+  'name*',
+  'testDefinition*',
+  'entityFQN*',
+  'testSuite',
+];
 
 const statusRenderer = (value: Status) => {
   return value === Status.Failure ? (
@@ -103,6 +105,19 @@ export const renderColumnDataEditor = (
           reducePreviewLineClass="max-one-line"
         />
       );
+    case 'parameterValues':
+      return value ? (
+        <Tooltip
+          containerClassName="tw:max-w-sm tw:break-all"
+          placement="top"
+          title={value}>
+          <TooltipTrigger>
+            <span className="tw:block tw:truncate">{value}</span>
+          </TooltipTrigger>
+        </Tooltip>
+      ) : (
+        value
+      );
 
     default:
       return value;
@@ -112,37 +127,61 @@ export const renderColumnDataEditor = (
 export const getColumnConfig = (
   column: string,
   entityType: EntityType,
-  editable = false
-): Column<any> => {
+  multipleOwner: {
+    user: boolean;
+    team: boolean;
+  },
+  editable = false,
+  isBulkEdit = false
+): Column<Record<string, unknown>> => {
   const colType = column.split('.').pop() ?? '';
+  const disabledColumns = isBulkEdit
+    ? CSV_DISABLED_COLUMNS.includes(colType)
+    : false;
 
   return {
     key: column,
     name: startCase(column),
     sortable: false,
     resizable: true,
-    cellClass: () => `rdg-cell-${column.replace(/[^a-zA-Z0-9-_]/g, '')}`,
-    editable,
-    renderEditCell: csvUtilsClassBase.getEditor(colType, entityType),
-    renderCell: (data: any) =>
+    cellClass: () => `rdg-cell-${column.replaceAll(/[^a-zA-Z0-9-_]/g, '')}`,
+    editable: editable ? !disabledColumns : false,
+    renderEditCell: csvUtilsClassBase.getEditor(
+      colType,
+      entityType,
+      multipleOwner
+    ),
+    renderCell: (data: RenderCellProps<Record<string, unknown>>) =>
       renderColumnDataEditor(colType, {
-        value: data.row[column],
+        value: data.row[column] as string | undefined,
         data: { details: '', glossaryStatus: '' },
       }),
     minWidth: COLUMNS_WIDTH[colType] ?? 180,
-  } as Column<any>;
+  } as Column<Record<string, unknown>>;
 };
 
 export const getEntityColumnsAndDataSourceFromCSV = (
   csv: string[][],
   entityType: EntityType,
-  cellEditable: boolean
+  multipleOwner: {
+    user: boolean;
+    team: boolean;
+  },
+  cellEditable: boolean,
+  isBulkEdit: boolean
 ) => {
   const [cols, ...rows] = csv;
 
   const columns =
-    cols?.map((column) => getColumnConfig(column, entityType, cellEditable)) ??
-    [];
+    cols?.map((column) =>
+      getColumnConfig(
+        column,
+        entityType,
+        multipleOwner,
+        cellEditable,
+        isBulkEdit
+      )
+    ) ?? [];
 
   const dataSource =
     rows.map((row, idx) => {
@@ -164,44 +203,26 @@ export const getEntityColumnsAndDataSourceFromCSV = (
 };
 
 export const getCSVStringFromColumnsAndDataSource = (
-  columns: Column<any>[],
+  columns: Array<Pick<Column<unknown>, 'key'>>,
   dataSource: Record<string, string>[]
 ) => {
-  const header = columns.map((col) => col.key).join(',');
-  const rows = dataSource.map((row) => {
-    const compactValues = compact(columns.map((col) => row[col.key ?? '']));
+  const fieldNames = columns.map((c) => c.key);
 
-    if (compactValues.length === 0) {
-      return '';
-    }
+  const data = dataSource.map((row) =>
+    Object.fromEntries(
+      fieldNames.map((key) => {
+        const value = String(row[key] ?? '');
 
-    return columns
-      .map((col) => {
-        const value = get(row, col.key ?? '', '');
-        const colName = col.key ?? '';
-        if (
-          csvUtilsClassBase
-            .columnsWithMultipleValuesEscapeNeeded()
-            .includes(colName)
-        ) {
-          return isEmpty(value)
-            ? ''
-            : `"${value.replaceAll(new RegExp('"', 'g'), '""')}"`;
-        } else if (
-          value.includes(',') ||
-          value.includes('\n') ||
-          colName.includes('tags') ||
-          colName.includes('domains')
-        ) {
-          return isEmpty(value) ? '' : `"${value}"`;
-        }
-
-        return get(row, col.key ?? '', '');
+        return [key, value];
       })
-      .join(',');
-  });
+    )
+  );
 
-  return [header, ...compact(rows)].join('\n');
+  return unparse(data, {
+    columns: fieldNames,
+    header: true,
+    newline: '\n',
+  });
 };
 
 /**
@@ -267,8 +288,8 @@ const convertCustomPropertyStringToValueExtensionBasedOnType = (
       // step 3: convert the rowStringList into objects with column names as keys
       const rows = rowStringList.map((row) => {
         // Step 1: Replace commas inside double quotes with a placeholder
-        const preprocessedInput = row.replace(/"([^"]*)"/g, (_, p1) => {
-          return `${p1.replace(/,/g, '__COMMA__')}`;
+        const preprocessedInput = row.replaceAll(/"([^"]*)"/g, (_, p1) => {
+          return `${p1.replaceAll(/,/g, '__COMMA__')}`;
         });
 
         // Step 2: Split the row by comma
@@ -481,7 +502,7 @@ export const convertEntityExtensionToCustomPropertyString = (
  */
 export const splitCSV = (input: string): string[] => {
   // First, normalize the input by replacing escaped quotes with a temporary marker
-  const normalizedInput = input.replace(/\\"/g, '__ESCAPED_QUOTE__');
+  const normalizedInput = input.replaceAll(/\\"/g, '__ESCAPED_QUOTE__');
 
   const result = parse<string[]>(normalizedInput, {
     delimiter: ',',
@@ -500,6 +521,15 @@ export const splitCSV = (input: string): string[] => {
 
   // Restore the escaped quotes in the result and ensure no trailing spaces
   return (result.data[0] || []).map((value) =>
-    value.replace(/__ESCAPED_QUOTE__/g, '"').trim()
+    value.replaceAll(/__ESCAPED_QUOTE__/g, '"').trim()
   );
+};
+
+export const getCustomPropertyEntityType = (entityType: EntityType) => {
+  switch (entityType) {
+    case EntityType.GLOSSARY:
+      return EntityType.GLOSSARY_TERM;
+    default:
+      return entityType;
+  }
 };

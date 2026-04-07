@@ -245,7 +245,7 @@ export const UserTab = ({
     return tabColumns.filter((column) =>
       column.key === 'actions' ? !isTeamDeleted : true
     );
-  }, [handleRemoveClick, editUserPermission, isTeamDeleted]);
+  }, [handleRemoveClick, editUserPermission, isTeamDeleted, t]);
 
   const sortedUser = useMemo(() => orderBy(users, ['name'], 'asc'), [users]);
 
@@ -307,7 +307,7 @@ export const UserTab = ({
     }
 
     return option;
-  }, [handleUserExportClick, handleImportClick, permission]);
+  }, [handleUserExportClick, handleImportClick, permission, t]);
 
   const handleRemoveUser = () => {
     if (deletingUser?.id) {
@@ -325,7 +325,7 @@ export const UserTab = ({
     return permission.EditAll
       ? t('label.add-new-entity', { entity: t('label.user') })
       : t('message.no-permission-for-action');
-  }, [permission, isTeamDeleted]);
+  }, [permission, isTeamDeleted, t]);
 
   if (isEmpty(users) && !searchText && !isLoading) {
     return isGroupType ? (
@@ -334,6 +334,7 @@ export const UserTab = ({
           <Space>
             <UserSelectableList
               hasPermission
+              includeBot
               selectedUsers={currentTeam?.users ?? []}
               onUpdate={onAddUser}>
               <Tooltip placement="topRight" title={addUserButtonTitle}>
@@ -402,6 +403,7 @@ export const UserTab = ({
                 {users.length > 0 && editUserPermission && (
                   <UserSelectableList
                     hasPermission
+                    includeBot
                     selectedUsers={currentTeam?.users ?? []}
                     onUpdate={onAddUser}>
                     <Button data-testid="add-new-user" type="primary">

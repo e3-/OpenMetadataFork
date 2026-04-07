@@ -15,7 +15,8 @@ import Icon from '@ant-design/icons';
 import { Typography } from 'antd';
 import classNames from 'classnames';
 import { isEmpty, uniqueId } from 'lodash';
-import { FC, HTMLAttributes } from 'react';
+import { FC, HTMLAttributes, memo } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Node } from 'reactflow';
 import { ReactComponent as DragIconDotted } from '../../../assets/svg/dots-six-bold.svg';
 import { entityData } from '../../../constants/Lineage.constants';
@@ -33,7 +34,11 @@ interface EntityNodeProps extends HTMLAttributes<HTMLDivElement> {
   label: string;
 }
 
-const EntityNode: FC<EntityNodeProps> = ({ type, label, draggable }) => {
+const EntityNodeInternal: FC<EntityNodeProps> = ({
+  type,
+  label,
+  draggable,
+}) => {
   const { theme } = useApplicationStore();
   const onDragStart = (event: React.DragEvent, nodeType: string) => {
     event.dataTransfer.setData('application/reactflow', nodeType);
@@ -75,7 +80,15 @@ const EntityNode: FC<EntityNodeProps> = ({ type, label, draggable }) => {
   );
 };
 
+const EntityNode = memo(EntityNodeInternal);
+
 const EntityLineageSidebar: FC<SidebarProps> = ({ show, newAddedNode }) => {
+  const { t } = useTranslation();
+
+  if (!show) {
+    return null;
+  }
+
   return (
     <div
       className={classNames('entity-lineage sidebar', {
@@ -85,7 +98,7 @@ const EntityLineageSidebar: FC<SidebarProps> = ({ show, newAddedNode }) => {
         <EntityNode
           draggable={isEmpty(newAddedNode)}
           key={uniqueId()}
-          label={d.label}
+          label={t(d.label)}
           type={d.type}
         />
       ))}

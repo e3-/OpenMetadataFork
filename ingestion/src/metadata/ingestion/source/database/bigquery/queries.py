@@ -68,26 +68,29 @@ BIGQUERY_TABLE_AND_TYPE = textwrap.dedent(
     """
 )
 
-BIGQUERY_TABLE_CONSTRAINTS = textwrap.dedent(
-    """
-    SELECT * 
-    FROM `{project_id}`.{schema_name}.INFORMATION_SCHEMA.CONSTRAINT_COLUMN_USAGE 
-    WHERE constraint_name LIKE '%pk$';
-    """
-)
-
-BIGQUERY_FOREIGN_CONSTRAINTS = textwrap.dedent(
+BIGQUERY_CONSTRAINTS = textwrap.dedent(
     """
     SELECT
-      c.table_name AS referred_table,
-      r.table_schema as referred_schema,
-      r.constraint_name as name,
-      c.column_name as referred_columns,
-      c.column_name as constrained_columns,
-      r.table_name as table_name
-    FROM `{project_id}`.{schema_name}.INFORMATION_SCHEMA.CONSTRAINT_COLUMN_USAGE c 
-    JOIN `{project_id}`.{schema_name}.INFORMATION_SCHEMA.TABLE_CONSTRAINTS r ON c.constraint_name = r.constraint_name 
-    WHERE r.constraint_type = 'FOREIGN KEY';
+        kcu.constraint_name,
+        kcu.table_catalog,
+        kcu.table_schema,
+        kcu.table_name,
+        kcu.column_name,
+        tc.constraint_type,
+        ccu.table_catalog AS referenced_catalog,
+        ccu.table_schema AS referenced_schema,
+        ccu.table_name AS referenced_table,
+        ccu.column_name AS referenced_column
+    FROM `{project_id}`.`{dataset_name}`.INFORMATION_SCHEMA.KEY_COLUMN_USAGE AS kcu
+    JOIN `{project_id}`.`{dataset_name}`.INFORMATION_SCHEMA.CONSTRAINT_COLUMN_USAGE AS ccu
+        ON kcu.constraint_catalog = ccu.constraint_catalog
+        AND kcu.constraint_schema = ccu.constraint_schema
+        AND kcu.constraint_name = ccu.constraint_name
+    JOIN `{project_id}`.`{dataset_name}`.INFORMATION_SCHEMA.TABLE_CONSTRAINTS AS tc
+        ON tc.constraint_catalog = ccu.constraint_catalog
+        AND tc.constraint_schema = ccu.constraint_schema
+        AND tc.constraint_name = ccu.constraint_name
+    WHERE tc.constraint_type IN ('PRIMARY KEY', 'FOREIGN KEY')
     """
 )
 
@@ -98,6 +101,19 @@ SELECT
   routine_definition as definition,
   external_language as language
 FROM `{database_name}`.`{schema_name}`.INFORMATION_SCHEMA.ROUTINES
+WHERE routine_type in ('PROCEDURE', 'TABLE FUNCTION')
+  AND routine_catalog = '{database_name}'
+  AND routine_schema = '{schema_name}'
+    """
+)
+
+BIGQUERY_GET_STORED_PROCEDURES_BY_REGION = textwrap.dedent(
+    """
+SELECT
+  routine_name as name,
+  routine_definition as definition,
+  external_language as language
+FROM `{database_name}`.`region-{region}`.INFORMATION_SCHEMA.ROUTINES
 WHERE routine_type in ('PROCEDURE', 'TABLE FUNCTION')
   AND routine_catalog = '{database_name}'
   AND routine_schema = '{schema_name}'
@@ -179,8 +195,9 @@ AND (
     (protoPayload.methodName = "google.cloud.bigquery.v2.JobService.InsertJob" AND (protoPayload.metadata.tableCreation:* OR protoPayload.metadata.tableChange:* OR protoPayload.metadata.tableDeletion:*))
 )
 AND resource.labels.project_id = "{project}"
-AND resource.labels.dataset_id = "{dataset}"
 AND timestamp >= "{start_date}"
+AND timestamp < "{end_date}"
+{dataset_filter}
 """
 
 BIGQUERY_GET_SCHEMA_NAMES = """
@@ -194,6 +211,26 @@ SELECT table_name FROM `{project}`.`{dataset}`.INFORMATION_SCHEMA.VIEWS;
 BIGQUERY_GET_MATERIALIZED_VIEW_NAMES = """
 SELECT table_name FROM `{project}`.`{dataset}`.INFORMATION_SCHEMA.MATERIALIZED_VIEWS;
 """
+
+BIGQUERY_GET_TABLE_DDLS = textwrap.dedent(
+    """
+    SELECT table_name, ddl
+    FROM `{database_name}`.`{schema_name}`.INFORMATION_SCHEMA.TABLES
+    WHERE table_schema = '{schema_name}'
+      AND table_catalog = '{database_name}'
+      AND table_type IN ('BASE TABLE', 'EXTERNAL')
+    """
+)
+
+BIGQUERY_GET_TABLE_DDLS_BY_REGION = textwrap.dedent(
+    """
+    SELECT table_name, ddl
+    FROM `{database_name}`.`region-{region}`.INFORMATION_SCHEMA.TABLES
+    WHERE table_schema = '{schema_name}'
+      AND table_catalog = '{database_name}'
+      AND table_type IN ('BASE TABLE', 'EXTERNAL')
+    """
+)
 
 
 class BigQueryQueryResult(BaseModel):
@@ -232,7 +269,9 @@ class BigQueryQueryResult(BaseModel):
             )
         )
 
-        return TypeAdapter(List[BigQueryQueryResult]).validate_python(map(dict, rows))
+        return TypeAdapter(List[BigQueryQueryResult]).validate_python(
+            [r._asdict() for r in rows]
+        )
 
 
 JOBS = """

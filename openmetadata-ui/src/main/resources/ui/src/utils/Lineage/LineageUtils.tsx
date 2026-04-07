@@ -11,7 +11,7 @@
  *  limitations under the License.
  */
 import { ArrowLeftOutlined, ArrowRightOutlined } from '@ant-design/icons';
-import ChevronRightIcon from '@mui/icons-material/ChevronRight';
+import { ChevronRight } from '@untitledui/icons';
 import { get, omit, pick } from 'lodash';
 import { ReactComponent as ColumnIcon } from '../../assets/svg/ic-column-new.svg';
 import { ReactComponent as TableIcon } from '../../assets/svg/ic-table-new.svg';
@@ -19,12 +19,13 @@ import { CondensedBreadcrumb } from '../../components/CondensedBreadcrumb/Conden
 import {
   ColumnLevelLineageNode,
   EdgeDetails,
+  LineageNodeType,
+  NodeData,
 } from '../../components/Lineage/Lineage.interface';
-import {
-  EImpactLevel,
-  LineageNodeData,
-} from '../../components/LineageTable/LineageTable.interface';
+import { EImpactLevel } from '../../components/LineageTable/LineageTable.interface';
 import { LineageDirection } from '../../generated/api/lineage/lineageDirection';
+import { Column } from '../../generated/entity/data/table';
+import { TagLabel } from '../../generated/type/tagLabel';
 import { TableSearchSource } from '../../interface/search.interface';
 import { QueryFieldInterface } from '../../pages/ExplorePage/ExplorePage.interface';
 import i18n from '../i18next/LocalUtil';
@@ -55,9 +56,33 @@ export const LINEAGE_DEPENDENCY_OPTIONS = [
   },
 ];
 
+const buildColumnTagMap = <T,>(
+  entityData: T & { columns?: Column[] }
+): Map<string, TagLabel[]> => {
+  const map = new Map<string, TagLabel[]>();
+  const columns = entityData.columns;
+  if (columns) {
+    for (const col of columns) {
+      // recursive
+      if (col.children) {
+        buildColumnTagMap({
+          columns: col.children,
+        }).forEach((tags, fqn) => {
+          map.set(fqn, tags);
+        });
+      }
+      if (col.fullyQualifiedName && col.tags) {
+        map.set(col.fullyQualifiedName, col.tags);
+      }
+    }
+  }
+
+  return map;
+};
+
 export const prepareColumnLevelNodesFromEdges = (
   edges: EdgeDetails[],
-  nodes: Record<string, LineageNodeData>,
+  nodes: Record<string, LineageNodeType>,
   direction: LineageDirection = LineageDirection.Downstream
 ) => {
   const entityKey =
@@ -65,35 +90,53 @@ export const prepareColumnLevelNodesFromEdges = (
 
   return edges.reduce((acc: ColumnLevelLineageNode[], node: EdgeDetails) => {
     if ((node.columns?.length ?? 0) > 0) {
+      const entityData = get(
+        nodes[node[entityKey].fullyQualifiedName ?? ''],
+        'entity'
+      );
+      const nodeDepth = get(
+        nodes[node[entityKey].fullyQualifiedName ?? ''],
+        'nodeDepth',
+        0
+      );
+
+      if (!entityData) {
+        return acc;
+      }
+
+      const picked = pick<NodeData['entity']>(
+        entityData,
+        'owners',
+        'tier',
+        'tags',
+        'domains',
+        'description'
+      ) as Pick<
+        TableSearchSource,
+        'tags' | 'tier' | 'domains' | 'description' | 'owners' | 'id'
+      >;
+
+      // Build column FQN → tags lookup map once per entity (O(C)), O(1) per lookup
+      const columnTagMap = buildColumnTagMap(entityData);
+
       for (const col of node.columns ?? []) {
-        const entityData = get(
-          nodes[node[entityKey].fullyQualifiedName ?? ''],
-          'entity'
-        );
-        const nodeDepth = get(
-          nodes[node[entityKey].fullyQualifiedName ?? ''],
-          'nodeDepth',
-          0
-        );
+        // flatten the fromColumns to create separate nodes for each
+        for (const fromCol of col.fromColumns || []) {
+          // Use column-specific tags instead of table tags
+          const columnFqn =
+            direction === LineageDirection.Downstream ? col.toColumn : fromCol;
+          const columnTags = columnFqn ? columnTagMap.get(columnFqn) ?? [] : [];
 
-        const picked = pick<LineageNodeData['entity']>(
-          entityData,
-          'owners',
-          'tier',
-          'tags',
-          'domains',
-          'description'
-        ) as Pick<
-          TableSearchSource,
-          'tags' | 'tier' | 'domains' | 'description' | 'owners' | 'id'
-        >; // Type assertion to Include type to ensure only these fields are
-
-        acc.push({
-          ...omit(node, 'columns'),
-          column: col,
-          nodeDepth,
-          ...picked,
-        });
+          acc.push({
+            ...omit(node, 'columns'),
+            fromColumn: fromCol,
+            toColumn: col.toColumn,
+            docId: fromCol + '->' + col.toColumn,
+            nodeDepth,
+            ...picked,
+            tags: columnTags,
+          } as ColumnLevelLineageNode);
+        }
       }
     }
 
@@ -103,7 +146,7 @@ export const prepareColumnLevelNodesFromEdges = (
 
 export const prepareDownstreamColumnLevelNodesFromDownstreamEdges = (
   edges: EdgeDetails[],
-  nodes: Record<string, LineageNodeData>
+  nodes: Record<string, LineageNodeType>
 ) => {
   return prepareColumnLevelNodesFromEdges(
     edges,
@@ -114,7 +157,7 @@ export const prepareDownstreamColumnLevelNodesFromDownstreamEdges = (
 
 export const prepareUpstreamColumnLevelNodesFromUpstreamEdges = (
   edges: EdgeDetails[],
-  nodes: Record<string, LineageNodeData>
+  nodes: Record<string, LineageNodeType>
 ) => {
   return prepareColumnLevelNodesFromEdges(
     edges,
@@ -131,14 +174,14 @@ export const getSearchNameEsQuery = (
       should: [
         {
           wildcard: {
-            'name.keyword': {
+            ['name.keyword']: {
               value: `*${searchText}*`,
             },
           },
         },
         {
           wildcard: {
-            'displayName.keyword': {
+            ['displayName.keyword']: {
               value: `*${searchText}*`,
             },
           },
@@ -159,7 +202,7 @@ export const getTruncatedPath = (path: string, className?: string) => {
     <CondensedBreadcrumb
       className={className}
       items={parts}
-      separator={<ChevronRightIcon className="right-arrow-icon" />}
+      separator={<ChevronRight className="right-arrow-icon" size={12} />}
     />
   );
 };

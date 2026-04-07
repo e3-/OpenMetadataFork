@@ -46,7 +46,6 @@ import org.openmetadata.schema.entity.automations.Workflow;
 import org.openmetadata.schema.entity.automations.WorkflowStatus;
 import org.openmetadata.schema.entity.automations.WorkflowType;
 import org.openmetadata.schema.entity.services.ingestionPipelines.PipelineServiceClientResponse;
-import org.openmetadata.schema.services.connections.metadata.OpenMetadataConnection;
 import org.openmetadata.schema.type.EntityHistory;
 import org.openmetadata.schema.type.Include;
 import org.openmetadata.schema.type.MetadataOperation;
@@ -235,9 +234,19 @@ public class WorkflowResource extends EntityResource<Workflow, WorkflowRepositor
               schema = @Schema(implementation = Include.class))
           @QueryParam("include")
           @DefaultValue("non-deleted")
-          Include include) {
+          Include include,
+      @Parameter(
+              description =
+                  "Per-relation include control. Format: field:value,field2:value2. "
+                      + "Example: owners:non-deleted,followers:all. "
+                      + "Valid values: all, deleted, non-deleted. "
+                      + "If not specified for a field, uses the entity's include value.",
+              schema = @Schema(type = "string", example = "owners:non-deleted,followers:all"))
+          @QueryParam("includeRelations")
+          String includeRelations) {
     return decryptOrNullify(
-        securityContext, getInternal(uriInfo, securityContext, id, fieldsParam, include));
+        securityContext,
+        getInternal(uriInfo, securityContext, id, fieldsParam, include, includeRelations));
   }
 
   @GET
@@ -274,9 +283,19 @@ public class WorkflowResource extends EntityResource<Workflow, WorkflowRepositor
               schema = @Schema(implementation = Include.class))
           @QueryParam("include")
           @DefaultValue("non-deleted")
-          Include include) {
+          Include include,
+      @Parameter(
+              description =
+                  "Per-relation include control. Format: field:value,field2:value2. "
+                      + "Example: owners:non-deleted,followers:all. "
+                      + "Valid values: all, deleted, non-deleted. "
+                      + "If not specified for a field, uses the entity's include value.",
+              schema = @Schema(type = "string", example = "owners:non-deleted,followers:all"))
+          @QueryParam("includeRelations")
+          String includeRelations) {
     return decryptOrNullify(
-        securityContext, getByNameInternal(uriInfo, securityContext, name, fieldsParam, include));
+        securityContext,
+        getByNameInternal(uriInfo, securityContext, name, fieldsParam, include, includeRelations));
   }
 
   @GET
@@ -595,10 +614,7 @@ public class WorkflowResource extends EntityResource<Workflow, WorkflowRepositor
       return workflowConverted;
     }
     Workflow workflowDecrypted = secretsManager.decryptWorkflow(workflow);
-    OpenMetadataConnection openMetadataServerConnection =
-        new OpenMetadataConnectionBuilder(openMetadataApplicationConfig).build();
-    workflowDecrypted.setOpenMetadataServerConnection(
-        secretsManager.encryptOpenMetadataConnection(openMetadataServerConnection, false));
+    workflowDecrypted.setOpenMetadataServerConnection(null);
     if (authorizer.shouldMaskPasswords(securityContext)) {
       workflowDecrypted = EntityMaskerFactory.getEntityMasker().maskWorkflow(workflowDecrypted);
     }

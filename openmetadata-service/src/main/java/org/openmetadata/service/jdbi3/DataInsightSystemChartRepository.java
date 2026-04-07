@@ -3,6 +3,9 @@ package org.openmetadata.service.jdbi3;
 import static org.openmetadata.service.Entity.DATA_INSIGHT_CUSTOM_CHART;
 import static org.openmetadata.service.Entity.INGESTION_PIPELINE;
 
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -31,10 +34,12 @@ import org.openmetadata.schema.type.Include;
 import org.openmetadata.schema.utils.JsonUtils;
 import org.openmetadata.schema.utils.ResultList;
 import org.openmetadata.service.Entity;
+import org.openmetadata.service.resources.datainsight.system.DataInsightSystemChartResource;
 import org.openmetadata.service.search.SearchClient;
 import org.openmetadata.service.socket.WebSocketManager;
 import org.openmetadata.service.socket.messages.ChartDataStreamMessage;
 import org.openmetadata.service.util.EntityUtil;
+import org.openmetadata.service.util.EntityUtil.RelationIncludes;
 import org.openmetadata.service.util.FullyQualifiedName;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -42,7 +47,6 @@ import org.slf4j.LoggerFactory;
 public class DataInsightSystemChartRepository extends EntityRepository<DataInsightCustomChart> {
   private static final Logger LOG = LoggerFactory.getLogger(DataInsightSystemChartRepository.class);
 
-  public static final String COLLECTION_PATH = "/v1/analytics/dataInsights/system/charts";
   private static final SearchClient searchClient = Entity.getSearchRepository().getSearchClient();
   public static final String TIMESTAMP_FIELD = "@timestamp";
 
@@ -94,11 +98,11 @@ public class DataInsightSystemChartRepository extends EntityRepository<DataInsig
   public static final String FORMULA_FUNC_REGEX =
       "\\b(count|sum|min|max|avg|unique)+\\((k='([^']*)')?,?\\s*(q='([^']*)')?\\)?";
 
-  public static final String NUMERIC_VALIDATION_REGEX = "[\\d\\.+-\\/\\*\\(\\)\s]+";
+  public static final String NUMERIC_VALIDATION_REGEX = "[\\d\\.+-\\/\\*\\(\\) ]+";
 
   public DataInsightSystemChartRepository() {
     super(
-        COLLECTION_PATH,
+        DataInsightSystemChartResource.COLLECTION_PATH,
         DATA_INSIGHT_CUSTOM_CHART,
         DataInsightCustomChart.class,
         Entity.getCollectionDAO().dataInsightCustomChartDAO(),
@@ -111,7 +115,9 @@ public class DataInsightSystemChartRepository extends EntityRepository<DataInsig
   // Lazy initialization for scheduler
   private ScheduledExecutorService getScheduler() {
     if (scheduler == null) {
-      scheduler = Executors.newScheduledThreadPool(10);
+      scheduler =
+          Executors.newScheduledThreadPool(
+              10, Thread.ofPlatform().name("om-data-insight-scheduler-", 0).factory());
     }
     return scheduler;
   }
@@ -165,19 +171,14 @@ public class DataInsightSystemChartRepository extends EntityRepository<DataInsig
         return combinedStatus;
       }
 
-      // Get current timestamp for recent pipeline status
-      long currentTime = System.currentTimeMillis();
-      long startTime = currentTime - (24 * 60 * 60 * 1000); // Last 24 hours
-      long endTime = currentTime;
-
       // Search for ingestion pipelines by service name using search
       SearchClient searchClient = Entity.getSearchRepository().getSearchClient();
       if (searchClient != null) {
         try {
           // Search for ingestion pipelines with the service name
-          String searchIndex = INGESTION_PIPELINE;
           var response =
-              searchClient.searchByField("service.name.keyword", serviceName, searchIndex, false);
+              searchClient.searchByField(
+                  "service.name.keyword", serviceName, INGESTION_PIPELINE, false);
 
           if (response != null && response.getStatus() == 200) {
             // Parse the response to extract pipeline information
@@ -637,7 +638,8 @@ public class DataInsightSystemChartRepository extends EntityRepository<DataInsig
   }
 
   @Override
-  public void setFields(DataInsightCustomChart entity, EntityUtil.Fields fields) {
+  public void setFields(
+      DataInsightCustomChart entity, EntityUtil.Fields fields, RelationIncludes relationIncludes) {
     /* Nothing to do */
   }
 
@@ -657,8 +659,56 @@ public class DataInsightSystemChartRepository extends EntityRepository<DataInsig
   }
 
   @Override
+  public void storeEntities(List<DataInsightCustomChart> entities) {
+    List<String> fqns = new ArrayList<>(entities.size());
+    List<String> jsons = new ArrayList<>(entities.size());
+    for (DataInsightCustomChart entity : entities) {
+      fqns.add(entity.getFullyQualifiedName());
+      jsons.add(serializeForStorage(entity));
+    }
+    dao.insertMany(dao.getTableName(), dao.getNameHashColumn(), fqns, jsons);
+  }
+
+  @Override
   public void storeRelationships(DataInsightCustomChart entity) {
     // No relationships to store beyond what is stored in the super class
+  }
+
+  static String combineFilters(String existingFilter, String userFilter) {
+    if (existingFilter == null || existingFilter.isEmpty() || existingFilter.equals("{}")) {
+      return userFilter;
+    }
+    if (userFilter == null || userFilter.isEmpty() || userFilter.equals("{}")) {
+      return existingFilter;
+    }
+    try {
+      JsonObject existingJson = JsonParser.parseString(existingFilter).getAsJsonObject();
+      JsonObject userJson = JsonParser.parseString(userFilter).getAsJsonObject();
+
+      JsonObject existingQuery = existingJson.getAsJsonObject("query");
+      JsonObject userQuery = userJson.getAsJsonObject("query");
+
+      if (existingQuery == null) return userFilter;
+      if (userQuery == null) return existingFilter;
+
+      JsonArray mustArray = new JsonArray();
+      mustArray.add(existingQuery);
+      mustArray.add(userQuery);
+
+      JsonObject boolObj = new JsonObject();
+      boolObj.add("must", mustArray);
+
+      JsonObject combinedQuery = new JsonObject();
+      combinedQuery.add("bool", boolObj);
+
+      JsonObject result = new JsonObject();
+      result.add("query", combinedQuery);
+
+      return result.toString();
+    } catch (Exception e) {
+      LOG.warn("Failed to combine filters, using user filter as fallback: {}", e.getMessage());
+      return userFilter;
+    }
   }
 
   public DataInsightCustomChartResultList getPreviewData(
@@ -669,7 +719,8 @@ public class DataInsightSystemChartRepository extends EntityRepository<DataInsig
       if (chartDetails.get("metrics") != null) {
         for (LinkedHashMap<String, Object> metrics :
             (List<LinkedHashMap<String, Object>>) chartDetails.get("metrics")) {
-          metrics.put("filter", filter);
+          String existingFilter = (String) metrics.get("filter");
+          metrics.put("filter", combineFilters(existingFilter, filter));
         }
       }
     }
@@ -704,7 +755,8 @@ public class DataInsightSystemChartRepository extends EntityRepository<DataInsig
           if (chartDetails.get("metrics") != null) {
             for (LinkedHashMap<String, Object> metrics :
                 (List<LinkedHashMap<String, Object>>) chartDetails.get("metrics")) {
-              metrics.put("filter", filter);
+              String existingFilter = (String) metrics.get("filter");
+              metrics.put("filter", combineFilters(existingFilter, filter));
             }
           }
         }
@@ -1206,7 +1258,7 @@ public class DataInsightSystemChartRepository extends EntityRepository<DataInsig
       this.serviceName = serviceName;
       this.filter = filter;
       this.entityLink = entityLink;
-      this.userIds = new ConcurrentHashMap().newKeySet(); // Thread-safe set
+      this.userIds = ConcurrentHashMap.newKeySet(); // Thread-safe set
       this.userIds.add(userId);
       this.startTime = System.currentTimeMillis(); // Session start time
       this.dataStartTime = dataStartTime; // Data range start time

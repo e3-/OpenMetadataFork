@@ -94,6 +94,12 @@
   },
   "mappings": {
     "properties": {
+      "changeDescription": {
+        "enabled": false
+      },
+      "incrementalChangeDescription": {
+        "enabled": false
+      },
       "id": {
         "type": "text",
         "fields": {
@@ -249,8 +255,11 @@
       "mimeType": {
         "type": "keyword"
       },
-      "extension": {
+      "fileExtension": {
         "type": "keyword"
+      },
+      "extension": {
+        "type": "flattened"
       },
       "path": {
         "type": "text",
@@ -338,6 +347,7 @@
         "normalizer": "lowercase_normalizer"
       },
       "owners": {
+        "type": "nested",
         "properties": {
           "id": {
             "type": "keyword"
@@ -635,6 +645,71 @@
             "ignore_above": 512
           }
         }
+      },
+      "customPropertiesTyped": {
+        "type": "nested",
+        "properties": {
+          "name": {
+            "type": "keyword"
+          },
+          "propertyType": {
+            "type": "keyword"
+          },
+          "stringValue": {
+            "type": "keyword"
+          },
+          "textValue": {
+            "type": "text",
+            "analyzer": "om_analyzer"
+          },
+          "longValue": {
+            "type": "long"
+          },
+          "doubleValue": {
+            "type": "double"
+          },
+          "start": {
+            "type": "long"
+          },
+          "end": {
+            "type": "long"
+          },
+          "refId": {
+            "type": "keyword"
+          },
+          "refType": {
+            "type": "keyword"
+          },
+          "refName": {
+            "type": "keyword"
+          },
+          "refFqn": {
+            "type": "keyword"
+          }
+        }
+      },
+      "fingerprint": {
+        "type": "keyword"
+      },
+      "textToEmbed": {
+        "type": "text"
+      },
+      "chunkIndex": {
+        "type": "integer"
+      },
+      "chunkCount": {
+        "type": "integer"
+      },
+      "parentId": {
+        "type": "keyword"
+      },
+      "ownerDisplayName": {
+        "type": "keyword",
+        "normalizer": "lowercase_normalizer"
+      },
+      "ownerName": {
+        "type": "keyword",
+        "normalizer": "lowercase_normalizer"
       }
     }
   }

@@ -16,6 +16,28 @@ import { ROUTES } from '../../../constants/constants';
 import { ROLES_LIST_WITH_PAGING } from '../Roles.mock';
 import RolesListPage from './RolesListPage';
 
+jest.mock('@openmetadata/ui-core-components', () => ({
+  Button: jest
+    .fn()
+    .mockImplementation(({ children, onClick }) => (
+      <button onClick={onClick}>{children}</button>
+    )),
+  ButtonUtility: jest
+    .fn()
+    .mockImplementation(
+      ({ icon, onClick, className, 'data-testid': testId }) => (
+        <button className={className} data-testid={testId} onClick={onClick}>
+          {icon}
+        </button>
+      )
+    ),
+  FeaturedIcon: jest.fn().mockImplementation(({ icon }) => <span>{icon}</span>),
+  Typography: jest
+    .fn()
+    .mockImplementation(({ children }) => <span>{children}</span>),
+  defaultColors: { gray: { 50: '#fafafa' } },
+}));
+
 const mockNavigate = jest.fn();
 const mockLocationPathname = '/mock-path';
 jest.mock('react-router-dom', () => ({
@@ -39,11 +61,6 @@ jest.mock('../../../components/common/DeleteWidget/DeleteWidgetModal', () =>
   jest
     .fn()
     .mockReturnValue(<div data-testid="delete-modal">DeletWdigetModal</div>)
-);
-
-jest.mock(
-  '../../../components/common/RichTextEditor/RichTextEditorPreviewNew',
-  () => jest.fn().mockReturnValue(<div data-testid="previewer">Previewer</div>)
 );
 
 jest.mock('../../../components/common/NextPrevious/NextPrevious', () =>
@@ -92,6 +109,24 @@ jest.mock(
     return jest.fn().mockImplementation(() => <p>TitleBreadcrumb</p>);
   }
 );
+
+jest.mock('../../../utils/TableColumn.util', () => ({
+  columnFilterIcon: jest.fn(),
+  ownerTableObject: jest.fn(() => []),
+  domainTableObject: jest.fn(() => []),
+  dataProductTableObject: jest.fn(() => []),
+  tagTableObject: jest.fn(() => []),
+  descriptionTableObject: jest.fn(() => [
+    {
+      title: 'label.description',
+      dataIndex: 'description',
+      key: 'description',
+      render: (text: string) => (
+        <div data-testid="viewer-container">{text}</div>
+      ),
+    },
+  ]),
+}));
 
 describe('Test Roles List Page', () => {
   it('Should render the list component', async () => {
@@ -146,7 +181,7 @@ describe('Test Roles List Page', () => {
     const container = await screen.findByTestId('roles-list-table');
 
     const nameRows = await screen.findAllByTestId('role-name');
-    const descriptionRows = await screen.findAllByTestId('previewer');
+    const descriptionRows = await screen.findAllByTestId('viewer-container');
     const policiesRows = await screen.findAllByTestId('policy-link');
     const actionsRows = await screen.findAllByTestId('delete-action-data');
 

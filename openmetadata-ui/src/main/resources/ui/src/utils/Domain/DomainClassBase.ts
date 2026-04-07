@@ -11,7 +11,10 @@
  *  limitations under the License.
  */
 
+import { createElement } from 'react';
+import TabsLabel from '../../components/common/TabsLabel/TabsLabel.component';
 import { TabProps } from '../../components/common/TabsLabel/TabsLabel.interface';
+import DataQualityDashboard from '../../components/DataQuality/DataQualityDashboard/DataQualityDashboard.component';
 import { DataProductsTabRef } from '../../components/Domain/DomainTabs/DataProductsTab/DataProductsTab.interface';
 import { EntityDetailsObjectInterface } from '../../components/Explore/ExplorePage.interface';
 import { AssetsTabRef } from '../../components/Glossary/GlossaryTerms/tabs/AssetsTabs.component';
@@ -61,6 +64,8 @@ export interface DomainDetailPageTabProps {
 type DomainWidgetKeys =
   | DetailPageWidgetKeys.DESCRIPTION
   | DetailPageWidgetKeys.OWNERS
+  | DetailPageWidgetKeys.TIER
+  | DetailPageWidgetKeys.CERTIFICATION
   | DetailPageWidgetKeys.TAGS
   | DetailPageWidgetKeys.GLOSSARY_TERMS
   | DetailPageWidgetKeys.EXPERTS
@@ -74,6 +79,8 @@ class DomainClassBase {
     this.defaultWidgetHeight = {
       [DetailPageWidgetKeys.DESCRIPTION]: 4,
       [DetailPageWidgetKeys.OWNERS]: 1.5,
+      [DetailPageWidgetKeys.TIER]: 1.5,
+      [DetailPageWidgetKeys.CERTIFICATION]: 1.5,
       [DetailPageWidgetKeys.TAGS]: 2,
       [DetailPageWidgetKeys.GLOSSARY_TERMS]: 2,
       [DetailPageWidgetKeys.EXPERTS]: 2,
@@ -85,7 +92,28 @@ class DomainClassBase {
   public getDomainDetailPageTabs(
     domainDetailsPageProps: DomainDetailPageTabProps
   ): TabProps[] {
-    return getDomainDetailTabs(domainDetailsPageProps);
+    const baseTabs = getDomainDetailTabs(domainDetailsPageProps);
+
+    if (domainDetailsPageProps.isVersionsView) {
+      return baseTabs;
+    }
+
+    const dqTab: TabProps = {
+      label: createElement(TabsLabel, {
+        id: EntityTabs.DATA_OBSERVABILITY,
+        name: i18n.t('label.data-observability'),
+      }),
+      key: EntityTabs.DATA_OBSERVABILITY,
+      children: createElement(DataQualityDashboard, {
+        isGovernanceView: true,
+        className: 'data-quality-governance-tab-wrapper tw:mt-2',
+        initialFilters: domainDetailsPageProps.domain.fullyQualifiedName
+          ? { domainFqn: domainDetailsPageProps.domain.fullyQualifiedName }
+          : undefined,
+      }),
+    };
+
+    return [...baseTabs, dqTab];
   }
 
   public getDomainDetailPageTabsIds(): Tab[] {
@@ -96,6 +124,7 @@ class DomainClassBase {
       EntityTabs.ACTIVITY_FEED,
       EntityTabs.ASSETS,
       EntityTabs.CUSTOM_PROPERTIES,
+      EntityTabs.DATA_OBSERVABILITY,
     ].map((tab: EntityTabs) => ({
       id: tab,
       name: tab,
@@ -138,11 +167,27 @@ class DomainClassBase {
         static: false,
       },
       {
+        h: this.defaultWidgetHeight[DetailPageWidgetKeys.TIER],
+        i: DetailPageWidgetKeys.TIER,
+        w: 2,
+        x: 6,
+        y: 1,
+        static: false,
+      },
+      {
+        h: this.defaultWidgetHeight[DetailPageWidgetKeys.CERTIFICATION],
+        i: DetailPageWidgetKeys.CERTIFICATION,
+        w: 2,
+        x: 6,
+        y: 2,
+        static: false,
+      },
+      {
         h: this.defaultWidgetHeight[DetailPageWidgetKeys.TAGS],
         i: DetailPageWidgetKeys.TAGS,
         w: 2,
         x: 6,
-        y: 1,
+        y: 3,
         static: false,
       },
       {
@@ -150,7 +195,7 @@ class DomainClassBase {
         i: DetailPageWidgetKeys.GLOSSARY_TERMS,
         w: 2,
         x: 6,
-        y: 2,
+        y: 4,
         static: false,
       },
       {
@@ -158,7 +203,7 @@ class DomainClassBase {
         i: DetailPageWidgetKeys.EXPERTS,
         w: 2,
         x: 6,
-        y: 3,
+        y: 5,
         static: false,
       },
       {
@@ -166,7 +211,7 @@ class DomainClassBase {
         i: DetailPageWidgetKeys.DOMAIN_TYPE,
         w: 2,
         x: 6,
-        y: 4,
+        y: 6,
         static: false,
       },
       {
@@ -174,7 +219,7 @@ class DomainClassBase {
         i: DetailPageWidgetKeys.CUSTOM_PROPERTIES,
         w: 2,
         x: 6,
-        y: 5,
+        y: 7,
         static: false,
       },
     ];
@@ -221,6 +266,10 @@ class DomainClassBase {
         return this.defaultWidgetHeight[DetailPageWidgetKeys.DESCRIPTION];
       case DetailPageWidgetKeys.OWNERS:
         return this.defaultWidgetHeight[DetailPageWidgetKeys.OWNERS];
+      case DetailPageWidgetKeys.TIER:
+        return this.defaultWidgetHeight[DetailPageWidgetKeys.TIER];
+      case DetailPageWidgetKeys.CERTIFICATION:
+        return this.defaultWidgetHeight[DetailPageWidgetKeys.CERTIFICATION];
       case DetailPageWidgetKeys.TAGS:
         return this.defaultWidgetHeight[DetailPageWidgetKeys.TAGS];
       case DetailPageWidgetKeys.GLOSSARY_TERMS:

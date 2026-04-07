@@ -6,7 +6,7 @@ import static org.openmetadata.service.apps.scheduler.OmAppJobListener.WEBSOCKET
 import static org.openmetadata.service.socket.WebSocketManager.DATA_INSIGHTS_JOB_BROADCAST_CHANNEL;
 import static org.openmetadata.service.workflows.searchIndex.ReindexingUtil.getInitialStatsForEntities;
 
-import es.org.elasticsearch.client.RestClient;
+import es.co.elastic.clients.transport.rest5_client.low_level.Rest5Client;
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
@@ -52,7 +52,6 @@ import org.quartz.JobExecutionContext;
 
 @Slf4j
 public class DataInsightsApp extends AbstractNativeApplication {
-  public static final String REPORT_DATA_TYPE_KEY = "ReportDataType";
   public static final String DATA_ASSET_INDEX_PREFIX = "di-data-assets";
   @Getter private Long timestamp;
   @Getter private int batchSize;
@@ -69,6 +68,7 @@ public class DataInsightsApp extends AbstractNativeApplication {
   @Getter private Optional<Backfill> backfill;
   @Getter EventPublisherJob jobData;
   private volatile boolean stopped = false;
+  private volatile DataAssetsWorkflow activeDataAssetsWorkflow;
 
   public final Set<String> dataAssetTypes =
       Set.of(
@@ -86,7 +86,8 @@ public class DataInsightsApp extends AbstractNativeApplication {
           "mlmodel",
           "dataProduct",
           "glossaryTerm",
-          "tag");
+          "tag",
+          "metric");
 
   public final Set<String> dataQualityEntities =
       Set.of(Entity.TEST_CASE_RESULT, Entity.TEST_CASE_RESOLUTION_STATUS);
@@ -103,13 +104,12 @@ public class DataInsightsApp extends AbstractNativeApplication {
         .equals(ElasticSearchConfiguration.SearchType.ELASTICSEARCH)) {
       searchInterface =
           new ElasticSearchDataInsightsClient(
-              (RestClient) searchRepository.getSearchClient().getLowLevelClient(),
+              (Rest5Client) searchRepository.getSearchClient().getLowLevelClient(),
               searchRepository.getClusterAlias());
     } else {
       searchInterface =
           new OpenSearchDataInsightsClient(
-              (os.org.opensearch.client.RestClient)
-                  searchRepository.getSearchClient().getLowLevelClient(),
+              searchRepository.getSearchClient().getHighLevelClient(),
               searchRepository.getClusterAlias());
     }
     return searchInterface;
@@ -127,13 +127,13 @@ public class DataInsightsApp extends AbstractNativeApplication {
   private void createIndexInternal(String entityType) throws IOException {
     IndexMapping resultIndexType = searchRepository.getIndexMapping(entityType);
     if (!searchRepository.indexExists(resultIndexType)) {
-      LOG.info(String.format("[Data Insights] Creating Index for Entity Type: '%s'", entityType));
+      LOG.info("[Data Insights] Creating Index for Entity Type: '{}'", entityType);
       searchRepository.createIndex(resultIndexType);
     }
     DataInsightsSearchInterface searchInterface = getSearchInterface();
     if (!searchInterface.dataAssetDataStreamExists(
         getDataStreamName(searchRepository.getClusterAlias(), entityType))) {
-      LOG.info(String.format("[Data Insights] Creating Index for Entity Type: '%s'", entityType));
+      LOG.info("[Data Insights] Creating Index for Entity Type: '{}'", entityType);
       searchRepository
           .getSearchClient()
           .addIndexAlias(
@@ -144,7 +144,7 @@ public class DataInsightsApp extends AbstractNativeApplication {
   private void deleteIndexInternal(String entityType) {
     IndexMapping resultIndexType = searchRepository.getIndexMapping(entityType);
     if (searchRepository.indexExists(resultIndexType)) {
-      LOG.info(String.format("[Data Insights] Deleting Index for Entity Type: '%s'", entityType));
+      LOG.info("[Data Insights] Deleting Index for Entity Type: '{}'", entityType);
       searchRepository.deleteIndex(resultIndexType);
     }
   }
@@ -337,14 +337,7 @@ public class DataInsightsApp extends AbstractNativeApplication {
     WebAnalyticsWorkflow workflow =
         new WebAnalyticsWorkflow(webAnalyticsConfig, timestamp, batchSize, backfill);
     WorkflowStats workflowStats = workflow.getWorkflowStats();
-
-    try {
-      workflow.process();
-    } catch (SearchIndexException ex) {
-      jobData.setStatus(EventPublisherJob.Status.FAILED);
-      jobData.setFailure(ex.getIndexingError());
-    }
-
+    workflow.process();
     return workflowStats;
   }
 
@@ -376,11 +369,14 @@ public class DataInsightsApp extends AbstractNativeApplication {
             getSearchInterface());
     WorkflowStats workflowStats = workflow.getWorkflowStats();
 
+    this.activeDataAssetsWorkflow = workflow;
     try {
       workflow.process();
     } catch (SearchIndexException ex) {
       jobData.setStatus(EventPublisherJob.Status.FAILED);
       jobData.setFailure(ex.getIndexingError());
+    } finally {
+      this.activeDataAssetsWorkflow = null;
     }
 
     return workflowStats;
@@ -426,6 +422,15 @@ public class DataInsightsApp extends AbstractNativeApplication {
       } else {
         jobData.setStatus(EventPublisherJob.Status.COMPLETED);
       }
+    }
+  }
+
+  @Override
+  protected void stop() {
+    this.stopped = true;
+    DataAssetsWorkflow workflow = this.activeDataAssetsWorkflow;
+    if (workflow != null) {
+      workflow.stop();
     }
   }
 

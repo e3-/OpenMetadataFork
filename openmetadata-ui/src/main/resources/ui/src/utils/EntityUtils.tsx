@@ -30,9 +30,14 @@ import { OwnerLabel } from '../components/common/OwnerLabel/OwnerLabel.component
 import QueryCount from '../components/common/QueryCount/QueryCount.component';
 import { TitleLink } from '../components/common/TitleBreadcrumb/TitleBreadcrumb.interface';
 import { DataAssetsWithoutServiceField } from '../components/DataAssets/DataAssetsHeader/DataAssetsHeader.interface';
-import { DataAssetSummaryPanelProps } from '../components/DataAssetSummaryPanel/DataAssetSummaryPanel.interface';
+import { DataAssetSummaryPanelProps } from '../components/DataAssetSummaryPanelV1/DataAssetSummaryPanelV1.interface';
 import { ProfilerTabPath } from '../components/Database/Profiler/ProfilerDashboard/profilerDashboard.interface';
 import { QueryVoteType } from '../components/Database/TableQueries/TableQueries.interface';
+import {
+  CUSTOM_PROPERTIES_TABS_SET,
+  LINEAGE_TABS_SET,
+  SCHEMA_TABS_SET,
+} from '../components/Entity/EntityRightPanel/EntityRightPanelVerticalNav.constants';
 import {
   EntityServiceUnion,
   EntityWithServices,
@@ -44,6 +49,7 @@ import {
 import TagsV1 from '../components/Tag/TagsV1/TagsV1.component';
 import { FQN_SEPARATOR_CHAR } from '../constants/char.constants';
 import {
+  DEFAULT_DOMAIN_VALUE,
   NO_DATA,
   PLACEHOLDER_ROUTE_ENTITY_TYPE,
   PLACEHOLDER_ROUTE_FQN,
@@ -110,9 +116,13 @@ import { TagLabel } from '../generated/type/tagLabel';
 import { UsageDetails } from '../generated/type/usageDetails';
 import { Votes } from '../generated/type/votes';
 import { DataInsightTabs } from '../interface/data-insight.interface';
-import { SearchSourceAlias } from '../interface/search.interface';
+import {
+  SearchSourceAlias,
+  TableColumnSearchSource,
+} from '../interface/search.interface';
 import { DataQualityPageTabs } from '../pages/DataQuality/DataQualityPage.interface';
 import {
+  formatNumberWithComma,
   getPartialNameFromTableFQN,
   getTableFQNFromColumnFQN,
 } from './CommonUtils';
@@ -125,6 +135,7 @@ import {
   getBotsPagePath,
   getBotsPath,
   getClassificationTagPath,
+  getDataProductDetailsPath,
   getDataQualityPagePath,
   getDomainDetailsPath,
   getDomainPath,
@@ -168,6 +179,19 @@ export const getEntityName = (entity?: {
   displayName?: string;
 }) => {
   return entity?.displayName || entity?.name || '';
+};
+
+export const getDomainDisplayName = (
+  activeDomainEntityRef?: EntityReference,
+  activeDomain?: string
+) => {
+  if (activeDomainEntityRef) {
+    return getEntityName(activeDomainEntityRef);
+  }
+
+  return activeDomain === DEFAULT_DOMAIN_VALUE
+    ? t('label.all-domain-plural')
+    : activeDomain;
 };
 
 export const getEntityLabel = (entity: {
@@ -312,6 +336,129 @@ const getCommonOverview = (
   ];
 };
 
+interface ColumnSearchResult {
+  dataType?: string;
+  dataTypeDisplay?: string;
+  constraint?: string;
+  table?: {
+    name?: string;
+    displayName?: string;
+    fullyQualifiedName?: string;
+  };
+  service?: {
+    name?: string;
+    displayName?: string;
+    fullyQualifiedName?: string;
+    type?: string;
+  };
+  database?: {
+    name?: string;
+    displayName?: string;
+    fullyQualifiedName?: string;
+  };
+  databaseSchema?: {
+    name?: string;
+    displayName?: string;
+    fullyQualifiedName?: string;
+  };
+  owners?: EntityReference[];
+  domains?: EntityReference[];
+}
+
+const getColumnOverview = (
+  columnDetails: ColumnSearchResult
+): BasicEntityOverviewInfo[] => {
+  const {
+    dataType,
+    dataTypeDisplay,
+    constraint,
+    table,
+    service,
+    database,
+    databaseSchema,
+    owners,
+    domains,
+  } = columnDetails;
+
+  const overview: BasicEntityOverviewInfo[] = [
+    ...getCommonOverview({ owners, domains }),
+    {
+      name: i18next.t('label.data-type'),
+      value: dataTypeDisplay || dataType || '--',
+      isLink: false,
+      visible: [
+        DRAWER_NAVIGATION_OPTIONS.lineage,
+        DRAWER_NAVIGATION_OPTIONS.explore,
+      ],
+    },
+    {
+      name: i18next.t('label.table'),
+      value: table?.displayName || table?.name || '--',
+      url: table?.fullyQualifiedName
+        ? getEntityDetailsPath(EntityType.TABLE, table.fullyQualifiedName)
+        : undefined,
+      isLink: !!table?.fullyQualifiedName,
+      visible: [
+        DRAWER_NAVIGATION_OPTIONS.lineage,
+        DRAWER_NAVIGATION_OPTIONS.explore,
+      ],
+    },
+    {
+      name: i18next.t('label.service'),
+      value: service?.displayName || service?.name || '--',
+      url: service?.fullyQualifiedName
+        ? getServiceDetailsPath(service.fullyQualifiedName, service.type || '')
+        : undefined,
+      isLink: !!service?.fullyQualifiedName,
+      visible: [
+        DRAWER_NAVIGATION_OPTIONS.lineage,
+        DRAWER_NAVIGATION_OPTIONS.explore,
+      ],
+    },
+    {
+      name: i18next.t('label.database'),
+      value: database?.displayName || database?.name || '--',
+      url: database?.fullyQualifiedName
+        ? getEntityDetailsPath(EntityType.DATABASE, database.fullyQualifiedName)
+        : undefined,
+      isLink: !!database?.fullyQualifiedName,
+      visible: [
+        DRAWER_NAVIGATION_OPTIONS.lineage,
+        DRAWER_NAVIGATION_OPTIONS.explore,
+      ],
+    },
+    {
+      name: i18next.t('label.schema'),
+      value: databaseSchema?.displayName || databaseSchema?.name || '--',
+      url: databaseSchema?.fullyQualifiedName
+        ? getEntityDetailsPath(
+            EntityType.DATABASE_SCHEMA,
+            databaseSchema.fullyQualifiedName
+          )
+        : undefined,
+      isLink: !!databaseSchema?.fullyQualifiedName,
+      visible: [
+        DRAWER_NAVIGATION_OPTIONS.lineage,
+        DRAWER_NAVIGATION_OPTIONS.explore,
+      ],
+    },
+  ];
+
+  if (constraint) {
+    overview.push({
+      name: i18next.t('label.constraint'),
+      value: constraint,
+      isLink: false,
+      visible: [
+        DRAWER_NAVIGATION_OPTIONS.lineage,
+        DRAWER_NAVIGATION_OPTIONS.explore,
+      ],
+    });
+  }
+
+  return overview;
+};
+
 const getTableOverview = (
   tableDetails: Table,
   additionalInfo?: Record<string, number | string>
@@ -409,7 +556,9 @@ const getTableOverview = (
     {
       name: i18next.t('label.row-plural'),
       value:
-        !isUndefined(profile) && profile?.rowCount ? profile.rowCount : NO_DATA,
+        !isUndefined(profile) && profile?.rowCount
+          ? formatNumberWithComma(profile.rowCount)
+          : NO_DATA,
       isLink: false,
       visible: [DRAWER_NAVIGATION_OPTIONS.lineage],
     },
@@ -621,7 +770,7 @@ export const getSearchIndexOverview = (
     },
     {
       name: i18next.t('label.service'),
-      value: service.fullyQualifiedName ?? NO_DATA,
+      value: service?.fullyQualifiedName ?? NO_DATA,
       url: getServiceDetailsPath(
         service?.name ?? '',
         ServiceCategory.SEARCH_SERVICES
@@ -1079,9 +1228,9 @@ const getApiCollectionOverview = (apiCollection: APICollection) => {
     },
     {
       name: i18next.t('label.service'),
-      value: service.fullyQualifiedName ?? NO_DATA,
+      value: service?.fullyQualifiedName ?? NO_DATA,
       url: getServiceDetailsPath(
-        service.fullyQualifiedName ?? '',
+        service?.fullyQualifiedName ?? '',
         ServiceCategory.API_SERVICES
       ),
       isLink: true,
@@ -1127,7 +1276,7 @@ const getApiEndpointOverview = (apiEndpoint: APIEndpoint) => {
       name: i18next.t('label.service'),
       value: service?.fullyQualifiedName ?? '',
       url: getServiceDetailsPath(
-        service.fullyQualifiedName ?? '',
+        service?.fullyQualifiedName ?? '',
         ServiceCategory.API_SERVICES
       ),
       isLink: true,
@@ -1337,6 +1486,11 @@ export const getEntityOverview = (
     case ExplorePageTabs.TABLES:
     case EntityType.TABLE: {
       return getTableOverview(entityDetail as Table, additionalInfo);
+    }
+
+    case ExplorePageTabs.COLUMNS:
+    case EntityType.TABLE_COLUMN: {
+      return getColumnOverview(entityDetail as unknown as ColumnSearchResult);
     }
 
     case ExplorePageTabs.TOPICS:
@@ -1688,7 +1842,6 @@ export const getEntityLinkFromType = (
     case EntityType.CONTAINER:
     case EntityType.DATABASE:
     case EntityType.DATABASE_SCHEMA:
-    case EntityType.DATA_PRODUCT:
     case EntityType.DASHBOARD_DATA_MODEL:
     case EntityType.STORED_PROCEDURE:
     case EntityType.SEARCH_INDEX:
@@ -1701,6 +1854,8 @@ export const getEntityLinkFromType = (
       return getEntityDetailsPath(entityType, fullyQualifiedName);
     case EntityType.METRIC:
       return getEntityDetailsPath(entityType, fullyQualifiedName);
+    case EntityType.DATA_PRODUCT:
+      return getDataProductDetailsPath(fullyQualifiedName);
     case EntityType.GLOSSARY:
     case EntityType.GLOSSARY_TERM:
       return getGlossaryTermDetailsPath(fullyQualifiedName);
@@ -2518,7 +2673,7 @@ export const getEntityBreadcrumbs = (
           url: ROUTES.METRICS,
         },
         {
-          name: getEntityName(entity),
+          name: entity.name,
           url: '',
         },
       ];
@@ -2526,6 +2681,74 @@ export const getEntityBreadcrumbs = (
 
     case EntityType.KPI:
       return getBreadCrumbForKpi(entity as Kpi);
+
+    case EntityType.TABLE_COLUMN: {
+      // Column breadcrumb: Service > Database > Schema > Table > Column
+      const columnData = entity as TableColumnSearchSource;
+      const service = columnData.service;
+      const database = columnData.database;
+      const databaseSchema = columnData.databaseSchema;
+      const table = columnData.table;
+
+      return [
+        ...(service
+          ? [
+              {
+                name: getEntityName(service),
+                url: service?.name
+                  ? getServiceDetailsPath(
+                      service?.name,
+                      ServiceCategoryPlural[
+                        service?.type as keyof typeof ServiceCategoryPlural
+                      ]
+                    )
+                  : '',
+              },
+            ]
+          : []),
+        ...(database
+          ? [
+              {
+                name: getEntityName(database),
+                url: getEntityDetailsPath(
+                  EntityType.DATABASE,
+                  database?.fullyQualifiedName ?? ''
+                ),
+              },
+            ]
+          : []),
+        ...(databaseSchema
+          ? [
+              {
+                name: getEntityName(databaseSchema),
+                url: getEntityDetailsPath(
+                  EntityType.DATABASE_SCHEMA,
+                  databaseSchema?.fullyQualifiedName ?? ''
+                ),
+              },
+            ]
+          : []),
+        ...(table
+          ? [
+              {
+                name: getEntityName(table),
+                url: getEntityDetailsPath(
+                  EntityType.TABLE,
+                  table?.fullyQualifiedName ?? ''
+                ),
+              },
+            ]
+          : []),
+        ...(includeCurrent
+          ? [
+              {
+                name: entity.name,
+                url: '', // Columns don't have their own page
+              },
+            ]
+          : []),
+      ];
+    }
 
     case EntityType.TOPIC:
     case EntityType.DASHBOARD:
@@ -2696,6 +2919,7 @@ export const getEntityNameLabel = (entityName?: string) => {
     file: t('label.file'),
     spreadsheet: t('label.spreadsheet'),
     worksheet: t('label.worksheet'),
+    tableColumn: t('label.column'),
   };
 
   return (
@@ -2707,10 +2931,12 @@ export const getEntityNameLabel = (entityName?: string) => {
 export const getPluralizeEntityName = (entityType?: string) => {
   const entityNameLabels = {
     [EntityType.TABLE]: t('label.table-plural'),
+    [EntityType.TABLE_COLUMN]: t('label.column-plural'),
     [EntityType.TOPIC]: t('label.topic-plural'),
     [EntityType.PIPELINE]: t('label.pipeline-plural'),
     [EntityType.CONTAINER]: t('label.container-plural'),
     [EntityType.DASHBOARD]: t('label.dashboard-plural'),
+    [EntityType.CHART]: t('label.chart-plural'),
     [EntityType.STORED_PROCEDURE]: t('label.stored-procedure-plural'),
     [EntityType.MLMODEL]: t('label.ml-model-plural'),
     [EntityType.DASHBOARD_DATA_MODEL]: t('label.data-model-plural'),
@@ -2911,4 +3137,15 @@ export const EntityTypeName: Record<EntityType, string> = {
   [EntityType.FILE]: t('label.file'),
   [EntityType.SPREADSHEET]: t('label.spreadsheet'),
   [EntityType.WORKSHEET]: t('label.worksheet'),
+  [EntityType.NOTIFICATION_TEMPLATE]: t('label.notification-template'),
+  [EntityType.TABLE_COLUMN]: t('label.column'),
 };
+
+export const hasSchemaTab = (entityType: EntityType): boolean =>
+  SCHEMA_TABS_SET.has(entityType);
+
+export const hasLineageTab = (entityType: EntityType): boolean =>
+  LINEAGE_TABS_SET.has(entityType);
+
+export const hasCustomPropertiesTab = (entityType: EntityType): boolean =>
+  CUSTOM_PROPERTIES_TABS_SET.has(entityType);

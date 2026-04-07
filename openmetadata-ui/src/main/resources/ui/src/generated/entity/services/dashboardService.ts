@@ -1,5 +1,5 @@
 /*
- *  Copyright 2025 Collate.
+ *  Copyright 2026 Collate.
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
@@ -20,6 +20,10 @@ export interface DashboardService {
     changeDescription?: ChangeDescription;
     connection?:        DashboardConnection;
     /**
+     * Reference to the data contract for this entity.
+     */
+    dataContract?: EntityReference;
+    /**
      * List of data products this entity is part of.
      */
     dataProducts?: EntityReference[];
@@ -39,6 +43,10 @@ export interface DashboardService {
      * Domains the Dashboard service belongs to.
      */
     domains?: EntityReference[];
+    /**
+     * Status of the entity.
+     */
+    entityStatus?: EntityStatus;
     /**
      * Followers of this entity.
      */
@@ -217,10 +225,15 @@ export interface DashboardConnection {
  * Grafana Connection Config
  *
  * Hex Connection Config
+ *
+ * SQL Server Reporting Services (SSRS) provides a set of on-premises tools and services to
+ * create, deploy, and manage paginated reports
  */
 export interface Connection {
     /**
      * Regex exclude or include charts that matches the pattern.
+     *
+     * Regex to exclude or include charts that matches the pattern.
      */
     chartFilterPattern?: FilterPattern;
     /**
@@ -286,6 +299,8 @@ export interface Connection {
      * URL to the Grafana instance.
      *
      * Hex API URL. For Hex.tech cloud, use https://app.hex.tech
+     *
+     * Host and Port of the Ssrs instance.
      */
     hostPort?: string;
     /**
@@ -322,6 +337,8 @@ export interface Connection {
      * Password to connect to PowerBI report server.
      *
      * Password to connect to MicroStrategy.
+     *
+     * Password to connect to Ssrs.
      */
     password?: string;
     /**
@@ -333,6 +350,8 @@ export interface Connection {
      *
      * Username to connect to MicroStrategy. This user should have privileges to read all the
      * metadata in MicroStrategy.
+     *
+     * Username to connect to Ssrs.
      */
     username?: string;
     /**
@@ -404,10 +423,15 @@ export interface Connection {
     /**
      * Tableau Site Name.
      */
-    siteName?:  string;
+    siteName?: string;
+    /**
+     * SSL Configuration details.
+     */
     sslConfig?: CertificatesSSLConfig;
     /**
      * Boolean marking if we need to verify the SSL certs for Grafana. Default to True.
+     *
+     * Client SSL verification.
      */
     verifySSL?: boolean | VerifySSL;
     /**
@@ -618,6 +642,12 @@ export interface AWSCredentials {
      */
     awsSessionToken?: string;
     /**
+     * Enable AWS IAM authentication. When enabled, uses the default credential provider chain
+     * (environment variables, instance profile, etc.). Defaults to false for backward
+     * compatibility.
+     */
+    enabled?: boolean;
+    /**
      * EndPoint URL for the AWS
      */
     endPointURL?: string;
@@ -686,7 +716,11 @@ export interface CertificatesSSLConfig {
  *
  * Regex to only include/exclude schemas that matches the pattern.
  *
+ * Regex to only include/exclude stored procedures that matches the pattern.
+ *
  * Regex to only include/exclude tables that matches the pattern.
+ *
+ * Regex to exclude or include charts that matches the pattern.
  */
 export interface FilterPattern {
     /**
@@ -757,14 +791,22 @@ export interface SupersetConnection {
     /**
      * Host and port of the source service.
      *
-     * Host and port of the MySQL service.
+     * Host and port of the MySQL service. For GCP CloudSQL, use the instance connection name in
+     * the format 'project_id:region:instance_name'.
      */
     hostPort?: string;
     /**
      * Ingest data from all databases in Postgres. You can use databaseFilterPattern on top of
      * this.
      */
-    ingestAllDatabases?:      boolean;
+    ingestAllDatabases?: boolean;
+    /**
+     * Fully qualified name of the view or table to use for query logs. If not provided,
+     * defaults to pg_stat_statements. Use this to configure a custom view (e.g.,
+     * my_schema.custom_pg_stat_statements) when direct access to pg_stat_statements is
+     * restricted.
+     */
+    queryStatementSource?:    string;
     sampleDataStorageConfig?: SampleDataStorageConfig;
     /**
      * Regex to only include/exclude schemas that matches the pattern.
@@ -773,16 +815,20 @@ export interface SupersetConnection {
     /**
      * SQLAlchemy driver scheme options.
      */
-    scheme?:                     Scheme;
-    sslMode?:                    SSLMode;
-    supportsDatabase?:           boolean;
-    supportsDataDiff?:           boolean;
-    supportsDBTExtraction?:      boolean;
-    supportsLineageExtraction?:  boolean;
-    supportsMetadataExtraction?: boolean;
-    supportsProfiler?:           boolean;
-    supportsQueryComment?:       boolean;
-    supportsUsageExtraction?:    boolean;
+    scheme?:  Scheme;
+    sslMode?: SSLMode;
+    /**
+     * Regex to only include/exclude stored procedures that matches the pattern.
+     */
+    storedProcedureFilterPattern?: FilterPattern;
+    supportsDatabase?:             boolean;
+    supportsDataDiff?:             boolean;
+    supportsDBTExtraction?:        boolean;
+    supportsLineageExtraction?:    boolean;
+    supportsMetadataExtraction?:   boolean;
+    supportsProfiler?:             boolean;
+    supportsQueryComment?:         boolean;
+    supportsUsageExtraction?:      boolean;
     /**
      * Regex to only include/exclude tables that matches the pattern.
      */
@@ -816,14 +862,26 @@ export interface SupersetConnection {
  * IAM Auth Database Connection Config
  *
  * Azure Database Connection Config
+ *
+ * GCP CloudSQL Database Connection Config. Uses the Google Cloud SQL Python Connector.
  */
 export interface AuthConfigurationType {
     /**
      * Password to connect to source.
+     *
+     * Database user password. Leave empty if using IAM database authentication.
      */
     password?:    string;
     awsConfig?:   AWSCredentials;
     azureConfig?: AzureCredentials;
+    /**
+     * Use GCP IAM for database authentication instead of a password.
+     */
+    enableIamAuth?: boolean;
+    /**
+     * GCP credentials to use. If not provided, Application Default Credentials will be used.
+     */
+    gcpConfig?: GCPCredentials;
 }
 
 /**
@@ -854,6 +912,125 @@ export interface AzureCredentials {
      * Key Vault Name
      */
     vaultName?: string;
+}
+
+/**
+ * GCP credentials configs.
+ *
+ * GCP credentials to use. If not provided, Application Default Credentials will be used.
+ */
+export interface GCPCredentials {
+    /**
+     * We support two ways of authenticating to GCP i.e via GCP Credentials Values or GCP
+     * Credentials Path
+     */
+    gcpConfig: GCPCredentialsConfiguration;
+    /**
+     * we enable the authenticated service account to impersonate another service account
+     */
+    gcpImpersonateServiceAccount?: GCPImpersonateServiceAccountValues;
+}
+
+/**
+ * We support two ways of authenticating to GCP i.e via GCP Credentials Values or GCP
+ * Credentials Path
+ *
+ * Pass the raw credential values provided by GCP
+ *
+ * Pass the path of file containing the GCP credentials info
+ *
+ * Use the application default credentials
+ */
+export interface GCPCredentialsConfiguration {
+    /**
+     * Google Cloud auth provider certificate.
+     */
+    authProviderX509CertUrl?: string;
+    /**
+     * Google Cloud auth uri.
+     */
+    authUri?: string;
+    /**
+     * Google Cloud email.
+     */
+    clientEmail?: string;
+    /**
+     * Google Cloud Client ID.
+     */
+    clientId?: string;
+    /**
+     * Google Cloud client certificate uri.
+     */
+    clientX509CertUrl?: string;
+    /**
+     * Google Cloud private key.
+     */
+    privateKey?: string;
+    /**
+     * Google Cloud private key id.
+     */
+    privateKeyId?: string;
+    /**
+     * Project ID
+     *
+     * GCP Project ID to parse metadata from
+     */
+    projectId?: string[] | string;
+    /**
+     * Google Cloud token uri.
+     */
+    tokenUri?: string;
+    /**
+     * Google Cloud Platform account type.
+     *
+     * Google Cloud Platform ADC ( Application Default Credentials )
+     */
+    type?: string;
+    /**
+     * Path of the file containing the GCP credentials info
+     */
+    path?: string;
+    /**
+     * Google Security Token Service audience which contains the resource name for the workload
+     * identity pool and the provider identifier in that pool.
+     */
+    audience?: string;
+    /**
+     * This object defines the mechanism used to retrieve the external credential from the local
+     * environment so that it can be exchanged for a GCP access token via the STS endpoint
+     */
+    credentialSource?: { [key: string]: string };
+    /**
+     * Google Cloud Platform account type.
+     */
+    externalType?: string;
+    /**
+     * Google Security Token Service subject token type based on the OAuth 2.0 token exchange
+     * spec.
+     */
+    subjectTokenType?: string;
+    /**
+     * Google Security Token Service token exchange endpoint.
+     */
+    tokenURL?: string;
+    [property: string]: any;
+}
+
+/**
+ * we enable the authenticated service account to impersonate another service account
+ *
+ * Pass the values to impersonate a service account of Google Cloud
+ */
+export interface GCPImpersonateServiceAccountValues {
+    /**
+     * The impersonated service account email
+     */
+    impersonateServiceAccount?: string;
+    /**
+     * Number of seconds the delegated credential should be valid
+     */
+    lifetime?: number;
+    [property: string]: any;
 }
 
 /**
@@ -935,6 +1112,12 @@ export interface AwsCredentials {
      */
     awsSessionToken?: string;
     /**
+     * Enable AWS IAM authentication. When enabled, uses the default credential provider chain
+     * (environment variables, instance profile, etc.). Defaults to false for backward
+     * compatibility.
+     */
+    enabled?: boolean;
+    /**
      * EndPoint URL for the AWS
      */
     endPointURL?: string;
@@ -999,6 +1182,8 @@ export enum SupersetConnectionType {
 
 /**
  * Client SSL verification. Make sure to configure the SSLConfig if enabled.
+ *
+ * Client SSL verification.
  */
 export enum VerifySSL {
     Ignore = "ignore",
@@ -1120,6 +1305,8 @@ export interface BucketDetails {
  *
  * GCP credentials configs.
  *
+ * GCP credentials to use. If not provided, Application Default Credentials will be used.
+ *
  * AWS credentials configs.
  */
 export interface SecurityConfigClass {
@@ -1189,6 +1376,12 @@ export interface SecurityConfigClass {
      */
     awsSessionToken?: string;
     /**
+     * Enable AWS IAM authentication. When enabled, uses the default credential provider chain
+     * (environment variables, instance profile, etc.). Defaults to false for backward
+     * compatibility.
+     */
+    enabled?: boolean;
+    /**
      * EndPoint URL for the AWS
      */
     endPointURL?: string;
@@ -1196,108 +1389,6 @@ export interface SecurityConfigClass {
      * The name of a profile to use with the boto session.
      */
     profileName?: string;
-}
-
-/**
- * We support two ways of authenticating to GCP i.e via GCP Credentials Values or GCP
- * Credentials Path
- *
- * Pass the raw credential values provided by GCP
- *
- * Pass the path of file containing the GCP credentials info
- *
- * Use the application default credentials
- */
-export interface GCPCredentialsConfiguration {
-    /**
-     * Google Cloud auth provider certificate.
-     */
-    authProviderX509CertUrl?: string;
-    /**
-     * Google Cloud auth uri.
-     */
-    authUri?: string;
-    /**
-     * Google Cloud email.
-     */
-    clientEmail?: string;
-    /**
-     * Google Cloud Client ID.
-     */
-    clientId?: string;
-    /**
-     * Google Cloud client certificate uri.
-     */
-    clientX509CertUrl?: string;
-    /**
-     * Google Cloud private key.
-     */
-    privateKey?: string;
-    /**
-     * Google Cloud private key id.
-     */
-    privateKeyId?: string;
-    /**
-     * Project ID
-     *
-     * GCP Project ID to parse metadata from
-     */
-    projectId?: string[] | string;
-    /**
-     * Google Cloud token uri.
-     */
-    tokenUri?: string;
-    /**
-     * Google Cloud Platform account type.
-     *
-     * Google Cloud Platform ADC ( Application Default Credentials )
-     */
-    type?: string;
-    /**
-     * Path of the file containing the GCP credentials info
-     */
-    path?: string;
-    /**
-     * Google Security Token Service audience which contains the resource name for the workload
-     * identity pool and the provider identifier in that pool.
-     */
-    audience?: string;
-    /**
-     * This object defines the mechanism used to retrieve the external credential from the local
-     * environment so that it can be exchanged for a GCP access token via the STS endpoint
-     */
-    credentialSource?: { [key: string]: string };
-    /**
-     * Google Cloud Platform account type.
-     */
-    externalType?: string;
-    /**
-     * Google Security Token Service subject token type based on the OAuth 2.0 token exchange
-     * spec.
-     */
-    subjectTokenType?: string;
-    /**
-     * Google Security Token Service token exchange endpoint.
-     */
-    tokenURL?: string;
-    [property: string]: any;
-}
-
-/**
- * we enable the authenticated service account to impersonate another service account
- *
- * Pass the values to impersonate a service account of Google Cloud
- */
-export interface GCPImpersonateServiceAccountValues {
-    /**
-     * The impersonated service account email
-     */
-    impersonateServiceAccount?: string;
-    /**
-     * Number of seconds the delegated credential should be valid
-     */
-    lifetime?: number;
-    [property: string]: any;
 }
 
 export enum SpaceType {
@@ -1378,20 +1469,23 @@ export enum DashboardServiceType {
     QuickSight = "QuickSight",
     Redash = "Redash",
     Sigma = "Sigma",
+    Ssrs = "Ssrs",
     Superset = "Superset",
     Tableau = "Tableau",
     ThoughtSpot = "ThoughtSpot",
 }
 
 /**
- * List of data products this entity is part of.
+ * Reference to the data contract for this entity.
  *
- * This schema defines the EntityReferenceList type used for referencing an entity.
+ * This schema defines the EntityReference type used for referencing an entity.
  * EntityReference is used for capturing relationships from one entity to another. For
  * example, a table has an attribute called database of type EntityReference that captures
  * the relationship of a table `belongs to a` database.
  *
- * This schema defines the EntityReference type used for referencing an entity.
+ * List of data products this entity is part of.
+ *
+ * This schema defines the EntityReferenceList type used for referencing an entity.
  * EntityReference is used for capturing relationships from one entity to another. For
  * example, a table has an attribute called database of type EntityReference that captures
  * the relationship of a table `belongs to a` database.
@@ -1442,9 +1536,33 @@ export interface EntityReference {
 }
 
 /**
+ * Status of the entity.
+ *
+ * Status of an entity. It is used for governance and is applied to all the entities in the
+ * catalog.
+ */
+export enum EntityStatus {
+    Approved = "Approved",
+    Archived = "Archived",
+    Deprecated = "Deprecated",
+    Draft = "Draft",
+    InReview = "In Review",
+    Rejected = "Rejected",
+    Unprocessed = "Unprocessed",
+}
+
+/**
  * This schema defines the type for labeling an entity with a Tag.
  */
 export interface TagLabel {
+    /**
+     * Timestamp when this tag was applied in ISO 8601 format
+     */
+    appliedAt?: Date;
+    /**
+     * Who it is that applied this tag (e.g: a bot, AI or a human)
+     */
+    appliedBy?: string;
     /**
      * Description for the tag label.
      */
@@ -1465,6 +1583,11 @@ export interface TagLabel {
      * used to determine the tag label.
      */
     labelType: LabelType;
+    /**
+     * Additional metadata associated with this tag label, such as recognizer information for
+     * automatically applied tags.
+     */
+    metadata?: TagLabelMetadata;
     /**
      * Name of the tag or glossary term.
      */
@@ -1499,6 +1622,79 @@ export enum LabelType {
     Generated = "Generated",
     Manual = "Manual",
     Propagated = "Propagated",
+}
+
+/**
+ * Additional metadata associated with this tag label, such as recognizer information for
+ * automatically applied tags.
+ *
+ * Additional metadata associated with a tag label, including information about how the tag
+ * was applied.
+ */
+export interface TagLabelMetadata {
+    /**
+     * Epoch time in milliseconds when the certification tag expires
+     */
+    expiryDate?: number;
+    /**
+     * Metadata about the recognizer that automatically applied this tag
+     */
+    recognizer?: TagLabelRecognizerMetadata;
+}
+
+/**
+ * Metadata about the recognizer that automatically applied this tag
+ *
+ * Metadata about the recognizer that applied a tag, including scoring and pattern
+ * information.
+ */
+export interface TagLabelRecognizerMetadata {
+    /**
+     * Details of patterns that matched during recognition
+     */
+    patterns?: PatternMatch[];
+    /**
+     * Unique identifier of the recognizer that applied this tag
+     */
+    recognizerId: string;
+    /**
+     * Human-readable name of the recognizer
+     */
+    recognizerName: string;
+    /**
+     * Confidence score assigned by the recognizer (0.0 to 1.0)
+     */
+    score: number;
+    /**
+     * What the recognizer analyzed to apply this tag
+     */
+    target?: Target;
+}
+
+/**
+ * Information about a pattern that matched during recognition
+ */
+export interface PatternMatch {
+    /**
+     * Name of the pattern that matched
+     */
+    name: string;
+    /**
+     * Regular expression or pattern definition
+     */
+    regex?: string;
+    /**
+     * Confidence score for this specific pattern match
+     */
+    score: number;
+}
+
+/**
+ * What the recognizer analyzed to apply this tag
+ */
+export enum Target {
+    ColumnName = "column_name",
+    Content = "content",
 }
 
 /**

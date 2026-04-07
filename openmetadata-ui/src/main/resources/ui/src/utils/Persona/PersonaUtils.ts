@@ -79,6 +79,7 @@ const ENTITY_ICONS: Record<CustomizeIconKeys, SvgComponent> = {
   [PageType.Classification]: ClassificationIcon,
   [PageType.Tag]: TagIcon,
   [PageType.DataProduct]: DataProductIcon,
+  [PageType.DataMarketplace]: DataProductIcon,
 };
 
 export const getCustomizePageCategories = (): SettingMenuItem[] => {
@@ -95,6 +96,14 @@ export const getCustomizePageCategories = (): SettingMenuItem[] => {
       label: i18n.t('label.home-page'),
       description: 'Customize the My data page with widget of your preference',
       icon: ENTITY_ICONS[PageType.LandingPage],
+    },
+    {
+      key: PageType.DataMarketplace,
+      label: i18n.t('label.data-marketplace'),
+      description: i18n.t('message.entity-customize-description', {
+        entity: i18n.t('label.data-marketplace'),
+      }),
+      icon: ENTITY_ICONS[PageType.DataMarketplace],
     },
     {
       key: 'governance',
@@ -132,9 +141,12 @@ export const getCustomizePageOptions = (
     case 'governance':
       return list.reduce((acc, item) => {
         if (
-          [PageType.Glossary, PageType.GlossaryTerm, PageType.Domain].includes(
-            item
-          )
+          [
+            PageType.Glossary,
+            PageType.GlossaryTerm,
+            PageType.Domain,
+            PageType.DataProduct,
+          ].includes(item)
         ) {
           acc.push(generateSettingItems(item));
         }
@@ -148,7 +160,11 @@ export const getCustomizePageOptions = (
             PageType.Glossary,
             PageType.GlossaryTerm,
             PageType.Domain,
+            PageType.DataProduct,
             PageType.LandingPage,
+            PageType.Tag,
+            PageType.Classification,
+            PageType.DataMarketplace,
           ].includes(item)
         ) {
           acc.push(generateSettingItems(item));

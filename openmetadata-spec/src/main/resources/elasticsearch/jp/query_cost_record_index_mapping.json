@@ -52,6 +52,12 @@
   },
   "mappings": {
     "properties": {
+      "changeDescription": {
+        "enabled": false
+      },
+      "incrementalChangeDescription": {
+        "enabled": false
+      },
       "query": {
         "properties": {
           "id": {
@@ -204,6 +210,7 @@
             "type": "long"
           },
           "owners": {
+            "type": "nested",
             "properties": {
               "id": {
                 "type": "keyword",
@@ -429,7 +436,16 @@
             "null_value": 0
           },
           "votes": {
-            "type": "object"
+            "type": "object",
+            "dynamic": false,
+            "properties": {
+              "upVotes": {
+                "type": "integer"
+              },
+              "downVotes": {
+                "type": "integer"
+              }
+            }
           }
         }
       },

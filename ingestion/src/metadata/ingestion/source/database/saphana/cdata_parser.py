@@ -18,13 +18,15 @@ import xml.etree.ElementTree as ET
 from collections import defaultdict
 from enum import Enum
 from functools import lru_cache
-from typing import Dict, Iterable, List, NewType, Optional, Set, Tuple
+from typing import Dict, Iterable, List, NewType, Optional, Set, Tuple, Union
 
 from pydantic import Field, computed_field
+from sqlalchemy import text
 from sqlalchemy.engine import Engine
 from typing_extensions import Annotated
 
 from metadata.generated.schema.api.lineage.addLineage import AddLineageRequest
+from metadata.generated.schema.entity.data.storedProcedure import StoredProcedure
 from metadata.generated.schema.entity.data.table import Table
 from metadata.generated.schema.entity.services.ingestionPipelines.status import (
     StackTraceError,
@@ -39,6 +41,7 @@ from metadata.generated.schema.type.entityLineage import (
 from metadata.generated.schema.type.entityReference import EntityReference
 from metadata.ingestion.api.models import Either
 from metadata.ingestion.lineage.sql_lineage import get_column_fqn
+from metadata.ingestion.models.custom_basemodel_validation import replace_separators
 from metadata.ingestion.models.custom_pydantic import BaseModel
 from metadata.ingestion.ometa.ometa_api import OpenMetadata
 from metadata.ingestion.source.database.saphana.models import (
@@ -49,6 +52,7 @@ from metadata.ingestion.source.database.saphana.queries import SAPHANA_SCHEMA_MA
 from metadata.utils import fqn
 from metadata.utils.constants import ENTITY_REFERENCE_TYPE_MAP
 from metadata.utils.dispatch import enum_register
+from metadata.utils.elasticsearch import get_entity_from_es_result
 from metadata.utils.logger import ingestion_logger
 
 logger = ingestion_logger()
@@ -166,12 +170,17 @@ class DataSource(BaseModel):
         metadata: OpenMetadata,
         engine: Engine,
         service_name: str,
-    ) -> Table:
+    ) -> Optional[Union[Table, StoredProcedure]]:
         """Build the Entity Reference for this DataSource"""
 
         if self.source_type == ViewType.LOGICAL:
             raise CDATAParsingError(
                 f"We could not find the logical DataSource origin for {self.name}"
+            )
+
+        if self.source_type == ViewType.TABLE_FUNCTION:
+            return self._get_table_function_entity(
+                metadata=metadata, service_name=service_name
             )
 
         if self.source_type == ViewType.DATA_BASE_TABLE:
@@ -189,16 +198,34 @@ class DataSource(BaseModel):
             # The source is a CalculationView, AttributeView or AnalyticView
             # package from <resourceUri>/SFLIGHT.MODELING/calculationviews/CV_SFLIGHT_SBOOK</resourceUri>
             package = self.location.split("/")[1]
+            view_name = self.location.split("/")[3]
             fqn_ = fqn.build(
                 metadata=metadata,
                 entity_type=Table,
                 service_name=service_name,
                 database_name=None,
                 schema_name=SYS_BIC_SCHEMA_NAME,
-                table_name=f"{package}/{self.name}",
+                table_name=f"{package}/{view_name}",
             )
 
         return metadata.get_by_name(entity=Table, fqn=fqn_)
+
+    def _get_table_function_entity(
+        self,
+        metadata: OpenMetadata,
+        service_name: str,
+    ) -> Optional[StoredProcedure]:
+        """Look up a table function as a StoredProcedure via ES search"""
+        encoded_name = replace_separators(self.location)
+        fqn_search_string = fqn._build(  # pylint: disable=protected-access
+            service_name, "*", "*", encoded_name
+        )
+
+        es_result = metadata.es_search_from_fqn(
+            entity_type=StoredProcedure,
+            fqn_search_string=fqn_search_string,
+        )
+        return get_entity_from_es_result(entity_list=es_result)
 
     def __hash__(self):
         return hash(self.location) + hash(self.name) + hash(self.source_type)
@@ -260,64 +287,29 @@ class ParsedLineage(BaseModel):
         """Given the target entity, build the AddLineageRequest based on the sources in `self`"""
         for source in self.sources:
             try:
-                source_table = source.get_entity(
+                source_entity = source.get_entity(
                     metadata=metadata, engine=engine, service_name=service_name
                 )
-                if not source_table:
-                    logger.warning(f"Can't find table for source [{source}]")
+                if not source_entity:
+                    logger.warning(f"Can't find entity for source [{source}]")
                     continue
 
+                source_entity_type = type(source_entity).__name__
+
                 column_lineage = []
-                for mapping in self.mappings:
-                    if mapping.data_source != source:
-                        continue
-
-                    from_columns = []
-                    for source_col in mapping.sources:
-                        from_column_fqn = get_column_fqn(
-                            table_entity=source_table,
-                            column=source_col,
-                        )
-                        if not from_column_fqn:
-                            logger.warning(
-                                f"Can't find source column [{source_col}] in [{source_table}]"
-                            )
-                            continue
-
-                        from_columns.append(
-                            FullyQualifiedEntityName(
-                                from_column_fqn,
-                            )
-                        )
-
-                    to_column_fqn = get_column_fqn(
-                        table_entity=to_entity,
-                        column=mapping.target,
-                    )
-                    if not to_column_fqn:
-                        logger.warning(
-                            f"Can't find target column [{mapping.target}] in [{to_entity}]."
-                            f" For source columns: {from_columns}"
-                        )
-                        continue
-
-                    to_column = FullyQualifiedEntityName(
-                        to_column_fqn,
-                    )
-                    column_lineage.append(
-                        ColumnLineage(
-                            fromColumns=from_columns,
-                            toColumn=to_column,
-                            function=mapping.formula,
-                        )
+                if isinstance(source_entity, Table):
+                    column_lineage = self._build_column_lineage(
+                        source=source,
+                        source_table=source_entity,
+                        to_entity=to_entity,
                     )
 
                 yield Either(
                     right=AddLineageRequest(
                         edge=EntitiesEdge(
                             fromEntity=EntityReference(
-                                id=source_table.id,
-                                type=ENTITY_REFERENCE_TYPE_MAP[Table.__name__],
+                                id=source_entity.id,
+                                type=ENTITY_REFERENCE_TYPE_MAP[source_entity_type],
                             ),
                             toEntity=EntityReference(
                                 id=to_entity.id,
@@ -325,7 +317,7 @@ class ParsedLineage(BaseModel):
                             ),
                             lineageDetails=LineageDetails(
                                 source=Source.ViewLineage,
-                                columnsLineage=column_lineage,
+                                columnsLineage=column_lineage or None,
                             ),
                         )
                     )
@@ -338,6 +330,59 @@ class ParsedLineage(BaseModel):
                         stackTrace=traceback.format_exc(),
                     )
                 )
+
+    def _build_column_lineage(
+        self,
+        source: "DataSource",
+        source_table: Table,
+        to_entity: Table,
+    ) -> List[ColumnLineage]:
+        """Build column-level lineage between Table entities"""
+        column_lineage = []
+        for mapping in self.mappings:
+            if mapping.data_source != source:
+                continue
+
+            from_columns = []
+            for source_col in mapping.sources:
+                from_column_fqn = get_column_fqn(
+                    table_entity=source_table,
+                    column=source_col,
+                )
+                if not from_column_fqn:
+                    logger.warning(
+                        f"Can't find source column [{source_col}] in [{source_table}]"
+                    )
+                    continue
+
+                from_columns.append(
+                    FullyQualifiedEntityName(
+                        from_column_fqn,
+                    )
+                )
+
+            to_column_fqn = get_column_fqn(
+                table_entity=to_entity,
+                column=mapping.target,
+            )
+            if not to_column_fqn:
+                logger.warning(
+                    f"Can't find target column [{mapping.target}] in [{to_entity}]."
+                    f" For source columns: {from_columns}"
+                )
+                continue
+
+            to_column = FullyQualifiedEntityName(
+                to_column_fqn,
+            )
+            column_lineage.append(
+                ColumnLineage(
+                    fromColumns=from_columns,
+                    toColumn=to_column,
+                    function=mapping.formula,
+                )
+            )
+        return column_lineage
 
 
 def _get_column_datasources_with_names(
@@ -605,28 +650,31 @@ def _explode_formula(
     Returns:
         Parsed Lineage from the formula
     """
-    column_ds = {}
+    # Group datasources with their actual source column names
+    # Map: datasource -> list of source column names (from base_lineage mappings)
+    ds_columns = defaultdict(list)
+
     for match in FORMULA_PATTERN.finditer(formula):
-        col_name = match.group(1)
+        col_name = match.group(
+            1
+        )  # This is the column reference in the formula (e.g., "EMAIL_1")
         mapping = base_lineage.find_target(col_name)
         if mapping:
-            column_ds[col_name] = mapping.data_source
+            # Use the actual source column names from the mapping, not the formula reference
+            # For example, if formula has "EMAIL_1" but mapping.sources is ["EMAIL"],
+            # we should use ["EMAIL"] as the source columns
+            ds_columns[mapping.data_source].extend(mapping.sources)
 
     # If no columns found in base_lineage, it might be a constant formula
-    if not column_ds:
+    if not ds_columns:
         return ParsedLineage()
-
-    # Group every datasource (key) with a list of the involved columns (values)
-    ds_columns = defaultdict(list)
-    for column, ds in column_ds.items():
-        ds_columns[ds].append(column)
 
     return ParsedLineage(
         mappings=[
             ColumnMapping(
                 # We get the source once we find the mapping of the target
                 data_source=data_source,
-                sources=columns,
+                sources=list(set(columns)),  # Remove duplicates if any
                 target=target,
                 formula=formula,
             )
@@ -973,7 +1021,8 @@ def _get_mapped_schema(
     """
     with engine.connect() as conn:
         result = conn.execute(
-            SAPHANA_SCHEMA_MAPPING.format(authoring_schema=schema_name)
+            text(SAPHANA_SCHEMA_MAPPING),
+            {"authoring_schema": schema_name},
         )
         row = result.fetchone()
         if row is not None:

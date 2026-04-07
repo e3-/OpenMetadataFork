@@ -1,5 +1,5 @@
 /*
- *  Copyright 2025 Collate.
+ *  Copyright 2026 Collate.
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
@@ -110,16 +110,19 @@ export interface PipelineConnection {
  * Stitch Connection
  *
  * Snowplow Pipeline Connection Config
+ *
+ * MuleSoft Anypoint Platform Connection Config
+ *
+ * Microsoft Fabric Data Factory Pipeline Connection Config
  */
 export interface ConfigObject {
     /**
-     * Underlying database connection. See
-     * https://airflow.apache.org/docs/apache-airflow/stable/howto/set-up-database.html for
-     * supported backends.
+     * Choose between database connection or REST API connection to fetch metadata from
+     * Airflow.
      *
      * Matillion Auth Configuration
      */
-    connection?: MetadataDatabaseConnection;
+    connection?: ConnectionClass;
     /**
      * Pipeline Service Management/UI URI.
      *
@@ -132,6 +135,9 @@ export interface ConfigObject {
      * KafkaConnect Service Management/UI URI.
      *
      * Host and port of the Stitch API host
+     *
+     * MuleSoft Anypoint Platform URL. Use https://anypoint.mulesoft.com for US cloud,
+     * https://eu1.anypoint.mulesoft.com for EU cloud, or your on-premises URL.
      */
     hostPort?: string;
     /**
@@ -140,6 +146,10 @@ export interface ConfigObject {
     numberOfStatus?: number;
     /**
      * Regex exclude pipelines.
+     *
+     * Regex to filter MuleSoft applications by name.
+     *
+     * Regex to only include/exclude pipelines that matches the pattern.
      */
     pipelineFilterPattern?:      FilterPattern;
     supportsMetadataExtraction?: boolean;
@@ -174,7 +184,7 @@ export interface ConfigObject {
      * Choose between Basic authentication (for self-hosted) or OAuth 2.0 client credentials
      * (for Airbyte Cloud)
      */
-    auth?: Authentication;
+    auth?: PurpleAuthentication;
     /**
      * Fivetran API Key.
      *
@@ -188,10 +198,7 @@ export interface ConfigObject {
     /**
      * Fivetran API Limit For Pagination.
      */
-    limit?: number;
-    /**
-     * SSL Configuration details.
-     */
+    limit?:     number;
     sslConfig?: Config;
     /**
      * Boolean marking if we need to verify the SSL certs for KafkaConnect REST API. True by
@@ -204,6 +211,12 @@ export interface ConfigObject {
      * DBT cloud Access URL.
      */
     host?: string;
+    /**
+     * Number of leading segments to remove from asset key paths before resolving to tables. For
+     * example, if your asset keys follow the pattern 'project/environment/schema/table' but you
+     * only need 'schema/table', set this to 2.
+     */
+    stripAssetKeyPrefixLength?: number;
     /**
      * Connection Time Limit Between OM and Dagster Graphql API in second
      */
@@ -232,6 +245,8 @@ export interface ConfigObject {
     apiHost?: string;
     /**
      * Client ID for DOMO
+     *
+     * Azure Application (client) ID for Service Principal authentication.
      */
     clientId?: string;
     /**
@@ -266,37 +281,9 @@ export interface ConfigObject {
      */
     uiHostPort?: string;
     /**
-     * service type of the messaging source
+     * Event broker configuration. Choose between Kafka and Kinesis.
      */
-    brokersUrl?: string;
-    /**
-     * consumer group name
-     */
-    consumerGroupName?: string;
-    /**
-     * initial Kafka consumer offset
-     */
-    consumerOffsets?: InitialConsumerOffsets;
-    /**
-     * max allowed wait time
-     */
-    poolTimeout?: number;
-    /**
-     * SASL Configuration details.
-     */
-    saslConfig?: SASLClientConfig;
-    /**
-     * Kafka security protocol config
-     */
-    securityProtocol?: KafkaSecurityProtocol;
-    /**
-     * max allowed inactivity time
-     */
-    sessionTimeout?: number;
-    /**
-     * topic from where Open lineage events will be pulled
-     */
-    topicName?: string;
+    brokerConfig?: BrokerConfiguration;
     /**
      * We support username/password or No Authentication
      */
@@ -310,6 +297,10 @@ export interface ConfigObject {
      */
     discoveryAPI?: string;
     /**
+     * List of IDs of your DBT cloud environments separated by comma `,`
+     */
+    environmentIds?: string[];
+    /**
      * List of IDs of your DBT cloud jobs seperated by comma `,`
      */
     jobIds?: string[];
@@ -321,6 +312,11 @@ export interface ConfigObject {
      * List of IDs of your DBT cloud projects seperated by comma `,`
      */
     projectIds?: string[];
+    /**
+     * Number of days to look back when fetching lineage events from Matillion DPC OpenLineage
+     * API.
+     */
+    lineageLookbackDays?: number;
     /**
      * Available sources to fetch metadata.
      */
@@ -359,8 +355,36 @@ export interface ConfigObject {
     deployment?: SnowplowDeployment;
     /**
      * Snowplow BDP Organization ID
+     *
+     * Anypoint Platform Organization ID. If not provided, the connector will use the user's
+     * default organization.
      */
     organizationId?: string;
+    /**
+     * Choose between Connected App (OAuth 2.0) or Basic Authentication.
+     */
+    authentication?: FluffyAuthentication;
+    /**
+     * Anypoint Platform Environment ID. If not provided, the connector will discover all
+     * accessible environments.
+     */
+    environmentId?: string;
+    /**
+     * Azure Active Directory authority URI. Defaults to https://login.microsoftonline.com/
+     */
+    authorityUri?: string;
+    /**
+     * Azure Application client secret for Service Principal authentication.
+     */
+    clientSecret?: string;
+    /**
+     * Azure Directory (tenant) ID for Service Principal authentication.
+     */
+    tenantId?: string;
+    /**
+     * The Microsoft Fabric workspace ID where the pipelines are located.
+     */
+    workspaceId?: string;
     [property: string]: any;
 }
 
@@ -388,7 +412,7 @@ export interface UsernamePasswordAuthentication {
  *
  * OAuth 2.0 client credentials authentication for Airbyte Cloud
  */
-export interface Authentication {
+export interface PurpleAuthentication {
     /**
      * Password to connect to Airbyte.
      */
@@ -408,7 +432,37 @@ export interface Authentication {
 }
 
 /**
+ * Choose between Connected App (OAuth 2.0) or Basic Authentication.
+ *
+ * Basic Auth Credentials
+ *
+ * OAuth 2.0 client credentials authentication for Airbyte Cloud
+ */
+export interface FluffyAuthentication {
+    /**
+     * Password to access the service.
+     */
+    password?: string;
+    /**
+     * Username to access the service.
+     */
+    username?: string;
+    /**
+     * Client ID for the application registered in Airbyte.
+     */
+    clientId?: string;
+    /**
+     * Client Secret for the application registered in Airbyte.
+     */
+    clientSecret?: string;
+}
+
+/**
+ * AWS credentials for generating MWAA CLI token.
+ *
  * AWS credentials configs.
+ *
+ * AWS credentials configuration.
  */
 export interface AWSCredentials {
     /**
@@ -444,6 +498,12 @@ export interface AWSCredentials {
      */
     awsSessionToken?: string;
     /**
+     * Enable AWS IAM authentication. When enabled, uses the default credential provider chain
+     * (environment variables, instance profile, etc.). Defaults to false for backward
+     * compatibility.
+     */
+    enabled?: boolean;
+    /**
      * EndPoint URL for the AWS
      */
     endPointURL?: string;
@@ -451,6 +511,146 @@ export interface AWSCredentials {
      * The name of a profile to use with the boto session.
      */
     profileName?: string;
+}
+
+/**
+ * Event broker configuration. Choose between Kafka and Kinesis.
+ *
+ * Kafka broker configuration for OpenLineage events.
+ *
+ * AWS Kinesis Data Streams configuration for OpenLineage events.
+ */
+export interface BrokerConfiguration {
+    /**
+     * Kafka bootstrap servers URL.
+     */
+    brokersUrl?: string;
+    /**
+     * Kafka consumer group name.
+     */
+    consumerGroupName?: string;
+    /**
+     * Initial Kafka consumer offset.
+     *
+     * Initial Kinesis shard iterator type.
+     */
+    consumerOffsets?: InitialConsumerOffsets;
+    /**
+     * Max allowed wait time.
+     *
+     * Poll interval in seconds.
+     */
+    poolTimeout?: number;
+    /**
+     * SASL Configuration details.
+     */
+    saslConfig?: SASLClientConfig;
+    /**
+     * Kafka security protocol config.
+     */
+    securityProtocol?: KafkaSecurityProtocol;
+    /**
+     * Max allowed inactivity time.
+     *
+     * Max inactivity timeout in seconds.
+     */
+    sessionTimeout?: number;
+    /**
+     * SSL Configuration details.
+     */
+    sslConfig?: Config;
+    /**
+     * Topic from where OpenLineage events will be pulled.
+     */
+    topicName?: string;
+    /**
+     * AWS credentials configuration.
+     */
+    awsConfig?: AWSCredentials;
+    /**
+     * Kinesis Data Stream name.
+     */
+    streamName?: string;
+}
+
+/**
+ * Initial Kafka consumer offset.
+ *
+ * Initial Kinesis shard iterator type.
+ */
+export enum InitialConsumerOffsets {
+    Earliest = "earliest",
+    InitialConsumerOffsetsLATEST = "LATEST",
+    Latest = "latest",
+    TrimHorizon = "TRIM_HORIZON",
+}
+
+/**
+ * SASL Configuration details.
+ *
+ * SASL client configuration.
+ */
+export interface SASLClientConfig {
+    /**
+     * SASL security mechanism
+     */
+    saslMechanism?: SaslMechanismType;
+    /**
+     * The SASL authentication password.
+     */
+    saslPassword?: string;
+    /**
+     * The SASL authentication username.
+     */
+    saslUsername?: string;
+}
+
+/**
+ * SASL security mechanism
+ *
+ * SASL Mechanism consumer config property
+ */
+export enum SaslMechanismType {
+    Gssapi = "GSSAPI",
+    Oauthbearer = "OAUTHBEARER",
+    Plain = "PLAIN",
+    ScramSHA256 = "SCRAM-SHA-256",
+    ScramSHA512 = "SCRAM-SHA-512",
+}
+
+/**
+ * Kafka security protocol config.
+ */
+export enum KafkaSecurityProtocol {
+    Plaintext = "PLAINTEXT",
+    SSL = "SSL",
+    SaslPlaintext = "SASL_PLAINTEXT",
+    SaslSSL = "SASL_SSL",
+}
+
+/**
+ * SSL Configuration details.
+ *
+ * Client SSL configuration
+ *
+ * SSL/TLS certificate configuration for client authentication. Provide CA certificate,
+ * client certificate, and private key for mutual TLS authentication.
+ *
+ * OpenMetadata Client configured to validate SSL certificates.
+ */
+export interface Config {
+    /**
+     * The CA certificate used for SSL validation.
+     */
+    caCertificate?: string;
+    /**
+     * The SSL certificate used for client authentication.
+     */
+    sslCertificate?: string;
+    /**
+     * The private key associated with the SSL certificate.
+     */
+    sslKey?: string;
 }
 
 /**
@@ -495,9 +695,10 @@ export interface AzureCredentials {
 }
 
 /**
- * Underlying database connection. See
- * https://airflow.apache.org/docs/apache-airflow/stable/howto/set-up-database.html for
- * supported backends.
+ * Choose between database connection or REST API connection to fetch metadata from
+ * Airflow.
+ *
+ * Airflow REST API Connection Config for connecting via REST API.
  *
  * Lineage Backend Connection Config
  *
@@ -510,16 +711,31 @@ export interface AzureCredentials {
  * Matillion Auth Configuration
  *
  * Matillion ETL Auth Config.
+ *
+ * Matillion Data Productivity Cloud Auth Config.
  */
-export interface MetadataDatabaseConnection {
+export interface ConnectionClass {
     /**
-     * Regex exclude pipelines.
+     * Airflow REST API version.
      */
-    pipelineFilterPattern?: FilterPattern;
+    apiVersion?: APIVersion;
+    /**
+     * Choose an authentication method: Basic Auth (username/password), Access Token, GCP
+     * Service Account (for Cloud Composer), or AWS Credentials (for MWAA).
+     */
+    authConfig?: AuthenticationConfiguration;
     /**
      * Service Type
      */
     type?: Type;
+    /**
+     * Whether to verify SSL certificates when connecting to the Airflow API.
+     */
+    verifySSL?: boolean;
+    /**
+     * Regex exclude pipelines.
+     */
+    pipelineFilterPattern?: FilterPattern;
     /**
      * Choose Auth Config Type.
      */
@@ -542,7 +758,8 @@ export interface MetadataDatabaseConnection {
      */
     databaseSchema?: string;
     /**
-     * Host and port of the MySQL service.
+     * Host and port of the MySQL service. For GCP CloudSQL, use the instance connection name in
+     * the format 'project_id:region:instance_name'.
      *
      * Host and port of the source service.
      *
@@ -563,14 +780,18 @@ export interface MetadataDatabaseConnection {
     /**
      * SSL Configuration details.
      */
-    sslConfig?:                  Config;
-    supportsDataDiff?:           boolean;
-    supportsDBTExtraction?:      boolean;
-    supportsLineageExtraction?:  boolean;
-    supportsMetadataExtraction?: boolean;
-    supportsProfiler?:           boolean;
-    supportsQueryComment?:       boolean;
-    supportsUsageExtraction?:    boolean;
+    sslConfig?: Config;
+    /**
+     * Regex to only include/exclude stored procedures that matches the pattern.
+     */
+    storedProcedureFilterPattern?: FilterPattern;
+    supportsDataDiff?:             boolean;
+    supportsDBTExtraction?:        boolean;
+    supportsLineageExtraction?:    boolean;
+    supportsMetadataExtraction?:   boolean;
+    supportsProfiler?:             boolean;
+    supportsQueryComment?:         boolean;
+    supportsUsageExtraction?:      boolean;
     /**
      * Regex to only include/exclude tables that matches the pattern.
      */
@@ -607,8 +828,15 @@ export interface MetadataDatabaseConnection {
      * this.
      */
     ingestAllDatabases?: boolean;
-    sslMode?:            SSLMode;
-    supportsDatabase?:   boolean;
+    /**
+     * Fully qualified name of the view or table to use for query logs. If not provided,
+     * defaults to pg_stat_statements. Use this to configure a custom view (e.g.,
+     * my_schema.custom_pg_stat_statements) when direct access to pg_stat_statements is
+     * restricted.
+     */
+    queryStatementSource?: string;
+    sslMode?:              SSLMode;
+    supportsDatabase?:     boolean;
     /**
      * How to run the SQLite database. :memory: by default.
      */
@@ -620,6 +848,206 @@ export interface MetadataDatabaseConnection {
      */
     password?:                      string;
     supportsViewLineageExtraction?: boolean;
+    /**
+     * OAuth2 Client ID for Matillion DPC authentication.
+     */
+    clientId?: string;
+    /**
+     * OAuth2 Client Secret for Matillion DPC authentication.
+     */
+    clientSecret?: string;
+    /**
+     * Personal Access Token for Matillion DPC. Alternative to OAuth2 Client Credentials.
+     */
+    personalAccessToken?: string;
+    /**
+     * Matillion DPC region. Determines the API base URL.
+     */
+    region?: Region;
+}
+
+/**
+ * Airflow REST API version.
+ *
+ * Airflow REST API version. Use v1 for Airflow 2.x and v2 for Airflow 3.x. Auto will detect
+ * the version automatically.
+ */
+export enum APIVersion {
+    Auto = "auto",
+    V1 = "v1",
+    V2 = "v2",
+}
+
+/**
+ * Choose an authentication method: Basic Auth (username/password), Access Token, GCP
+ * Service Account (for Cloud Composer), or AWS Credentials (for MWAA).
+ *
+ * Username and password for Airflow API authentication.
+ *
+ * Static access token for Airflow API authentication.
+ *
+ * GCP credentials for Google Cloud Composer. Supports service account values, credentials
+ * path, workload identity (external account), and ADC. Tokens are auto-refreshed at
+ * runtime.
+ *
+ * AWS MWAA (Managed Workflows for Apache Airflow) authentication configuration.
+ */
+export interface AuthenticationConfiguration {
+    /**
+     * Password for basic authentication to the Airflow API.
+     */
+    password?: string;
+    /**
+     * Username for basic authentication to the Airflow API.
+     */
+    username?: string;
+    /**
+     * Static access token for Airflow API authentication.
+     */
+    token?: string;
+    /**
+     * GCP credentials configuration.
+     */
+    credentials?: GCPCredentials;
+    /**
+     * MWAA credentials and environment configuration.
+     */
+    mwaaConfig?: MWAAConfiguration;
+}
+
+/**
+ * GCP credentials configuration.
+ *
+ * GCP credentials configs.
+ *
+ * GCP credentials to use. If not provided, Application Default Credentials will be used.
+ */
+export interface GCPCredentials {
+    /**
+     * We support two ways of authenticating to GCP i.e via GCP Credentials Values or GCP
+     * Credentials Path
+     */
+    gcpConfig: GCPCredentialsConfiguration;
+    /**
+     * we enable the authenticated service account to impersonate another service account
+     */
+    gcpImpersonateServiceAccount?: GCPImpersonateServiceAccountValues;
+}
+
+/**
+ * We support two ways of authenticating to GCP i.e via GCP Credentials Values or GCP
+ * Credentials Path
+ *
+ * Pass the raw credential values provided by GCP
+ *
+ * Pass the path of file containing the GCP credentials info
+ *
+ * Use the application default credentials
+ */
+export interface GCPCredentialsConfiguration {
+    /**
+     * Google Cloud auth provider certificate.
+     */
+    authProviderX509CertUrl?: string;
+    /**
+     * Google Cloud auth uri.
+     */
+    authUri?: string;
+    /**
+     * Google Cloud email.
+     */
+    clientEmail?: string;
+    /**
+     * Google Cloud Client ID.
+     */
+    clientId?: string;
+    /**
+     * Google Cloud client certificate uri.
+     */
+    clientX509CertUrl?: string;
+    /**
+     * Google Cloud private key.
+     */
+    privateKey?: string;
+    /**
+     * Google Cloud private key id.
+     */
+    privateKeyId?: string;
+    /**
+     * Project ID
+     *
+     * GCP Project ID to parse metadata from
+     */
+    projectId?: string[] | string;
+    /**
+     * Google Cloud token uri.
+     */
+    tokenUri?: string;
+    /**
+     * Google Cloud Platform account type.
+     *
+     * Google Cloud Platform ADC ( Application Default Credentials )
+     */
+    type?: string;
+    /**
+     * Path of the file containing the GCP credentials info
+     */
+    path?: string;
+    /**
+     * Google Security Token Service audience which contains the resource name for the workload
+     * identity pool and the provider identifier in that pool.
+     */
+    audience?: string;
+    /**
+     * This object defines the mechanism used to retrieve the external credential from the local
+     * environment so that it can be exchanged for a GCP access token via the STS endpoint
+     */
+    credentialSource?: { [key: string]: string };
+    /**
+     * Google Cloud Platform account type.
+     */
+    externalType?: string;
+    /**
+     * Google Security Token Service subject token type based on the OAuth 2.0 token exchange
+     * spec.
+     */
+    subjectTokenType?: string;
+    /**
+     * Google Security Token Service token exchange endpoint.
+     */
+    tokenURL?: string;
+    [property: string]: any;
+}
+
+/**
+ * we enable the authenticated service account to impersonate another service account
+ *
+ * Pass the values to impersonate a service account of Google Cloud
+ */
+export interface GCPImpersonateServiceAccountValues {
+    /**
+     * The impersonated service account email
+     */
+    impersonateServiceAccount?: string;
+    /**
+     * Number of seconds the delegated credential should be valid
+     */
+    lifetime?: number;
+    [property: string]: any;
+}
+
+/**
+ * MWAA credentials and environment configuration.
+ */
+export interface MWAAConfiguration {
+    /**
+     * AWS credentials for generating MWAA CLI token.
+     */
+    awsConfig: AWSCredentials;
+    /**
+     * The name of your MWAA environment.
+     */
+    mwaaEnvironmentName: string;
 }
 
 /**
@@ -630,14 +1058,26 @@ export interface MetadataDatabaseConnection {
  * IAM Auth Database Connection Config
  *
  * Azure Database Connection Config
+ *
+ * GCP CloudSQL Database Connection Config. Uses the Google Cloud SQL Python Connector.
  */
 export interface AuthConfigurationType {
     /**
      * Password to connect to source.
+     *
+     * Database user password. Leave empty if using IAM database authentication.
      */
     password?:    string;
     awsConfig?:   AWSCredentials;
     azureConfig?: AzureCredentials;
+    /**
+     * Use GCP IAM for database authentication instead of a password.
+     */
+    enableIamAuth?: boolean;
+    /**
+     * GCP credentials to use. If not provided, Application Default Credentials will be used.
+     */
+    gcpConfig?: GCPCredentials;
 }
 
 /**
@@ -649,9 +1089,15 @@ export interface AuthConfigurationType {
  *
  * Regex to only include/exclude schemas that matches the pattern.
  *
+ * Regex to only include/exclude stored procedures that matches the pattern.
+ *
  * Regex to only include/exclude tables that matches the pattern.
  *
  * Regex to only fetch containers that matches the pattern.
+ *
+ * Regex to filter MuleSoft applications by name.
+ *
+ * Regex to only include/exclude pipelines that matches the pattern.
  */
 export interface FilterPattern {
     /**
@@ -662,6 +1108,14 @@ export interface FilterPattern {
      * List of strings/regex patterns to match and include only database entities that match.
      */
     includes?: string[];
+}
+
+/**
+ * Matillion DPC region. Determines the API base URL.
+ */
+export enum Region {
+    Eu1 = "eu1",
+    Us1 = "us1",
 }
 
 /**
@@ -697,7 +1151,11 @@ export interface DataStorageConfig {
 }
 
 /**
+ * AWS credentials for generating MWAA CLI token.
+ *
  * AWS credentials configs.
+ *
+ * AWS credentials configuration.
  */
 export interface AwsCredentials {
     /**
@@ -733,6 +1191,12 @@ export interface AwsCredentials {
      */
     awsSessionToken?: string;
     /**
+     * Enable AWS IAM authentication. When enabled, uses the default credential provider chain
+     * (environment variables, instance profile, etc.). Defaults to false for backward
+     * compatibility.
+     */
+    enabled?: boolean;
+    /**
      * EndPoint URL for the AWS
      */
     endPointURL?: string;
@@ -750,31 +1214,6 @@ export enum Scheme {
     PgspiderPsycopg2 = "pgspider+psycopg2",
     PostgresqlPsycopg2 = "postgresql+psycopg2",
     SqlitePysqlite = "sqlite+pysqlite",
-}
-
-/**
- * SSL Configuration details.
- *
- * Client SSL configuration
- *
- * SSL/TLS certificate configuration for client authentication. Provide CA certificate,
- * client certificate, and private key for mutual TLS authentication.
- *
- * OpenMetadata Client configured to validate SSL certificates.
- */
-export interface Config {
-    /**
-     * The CA certificate used for SSL validation.
-     */
-    caCertificate?: string;
-    /**
-     * The SSL certificate used for client authentication.
-     */
-    sslCertificate?: string;
-    /**
-     * The private key associated with the SSL certificate.
-     */
-    sslKey?: string;
 }
 
 /**
@@ -796,18 +1235,12 @@ export enum SSLMode {
  */
 export enum Type {
     Backend = "Backend",
+    MatillionDPC = "MatillionDPC",
     MatillionETL = "MatillionETL",
     Mysql = "Mysql",
     Postgres = "Postgres",
+    RESTAPI = "RestAPI",
     SQLite = "SQLite",
-}
-
-/**
- * initial Kafka consumer offset
- */
-export enum InitialConsumerOffsets {
-    Earliest = "earliest",
-    Latest = "latest",
 }
 
 /**
@@ -862,15 +1295,19 @@ export interface DatabaseConnectionClass {
      * SSL/TLS certificate configuration for client authentication. Provide CA certificate,
      * client certificate, and private key for mutual TLS authentication.
      */
-    sslConfig?:                  Config;
-    supportsDatabase?:           boolean;
-    supportsDataDiff?:           boolean;
-    supportsDBTExtraction?:      boolean;
-    supportsLineageExtraction?:  boolean;
-    supportsMetadataExtraction?: boolean;
-    supportsProfiler?:           boolean;
-    supportsQueryComment?:       boolean;
-    supportsUsageExtraction?:    boolean;
+    sslConfig?: Config;
+    /**
+     * Regex to only include/exclude stored procedures that matches the pattern.
+     */
+    storedProcedureFilterPattern?: FilterPattern;
+    supportsDatabase?:             boolean;
+    supportsDataDiff?:             boolean;
+    supportsDBTExtraction?:        boolean;
+    supportsLineageExtraction?:    boolean;
+    supportsMetadataExtraction?:   boolean;
+    supportsProfiler?:             boolean;
+    supportsQueryComment?:         boolean;
+    supportsUsageExtraction?:      boolean;
     /**
      * Regex to only include/exclude tables that matches the pattern.
      */
@@ -989,48 +1426,6 @@ export enum S3Type {
 }
 
 /**
- * SASL Configuration details.
- *
- * SASL client configuration.
- */
-export interface SASLClientConfig {
-    /**
-     * SASL security mechanism
-     */
-    saslMechanism?: SaslMechanismType;
-    /**
-     * The SASL authentication password.
-     */
-    saslPassword?: string;
-    /**
-     * The SASL authentication username.
-     */
-    saslUsername?: string;
-}
-
-/**
- * SASL security mechanism
- *
- * SASL Mechanism consumer config property
- */
-export enum SaslMechanismType {
-    Gssapi = "GSSAPI",
-    Oauthbearer = "OAUTHBEARER",
-    Plain = "PLAIN",
-    ScramSHA256 = "SCRAM-SHA-256",
-    ScramSHA512 = "SCRAM-SHA-512",
-}
-
-/**
- * Kafka security protocol config
- */
-export enum KafkaSecurityProtocol {
-    Plaintext = "PLAINTEXT",
-    SSL = "SSL",
-    SaslSSL = "SASL_SSL",
-}
-
-/**
  * Service Type
  *
  * Service type.
@@ -1054,6 +1449,8 @@ export enum PipelineServiceType {
     KafkaConnect = "KafkaConnect",
     KinesisFirehose = "KinesisFirehose",
     Matillion = "Matillion",
+    MicrosoftFabricPipeline = "MicrosoftFabricPipeline",
+    Mulesoft = "Mulesoft",
     Nifi = "Nifi",
     OpenLineage = "OpenLineage",
     Snowplow = "Snowplow",
@@ -1182,6 +1579,14 @@ export interface AccessDetails {
  */
 export interface TagLabel {
     /**
+     * Timestamp when this tag was applied in ISO 8601 format
+     */
+    appliedAt?: Date;
+    /**
+     * Who it is that applied this tag (e.g: a bot, AI or a human)
+     */
+    appliedBy?: string;
+    /**
      * Description for the tag label.
      */
     description?: string;
@@ -1201,6 +1606,11 @@ export interface TagLabel {
      * used to determine the tag label.
      */
     labelType: LabelType;
+    /**
+     * Additional metadata associated with this tag label, such as recognizer information for
+     * automatically applied tags.
+     */
+    metadata?: TagLabelMetadata;
     /**
      * Name of the tag or glossary term.
      */
@@ -1235,6 +1645,79 @@ export enum LabelType {
     Generated = "Generated",
     Manual = "Manual",
     Propagated = "Propagated",
+}
+
+/**
+ * Additional metadata associated with this tag label, such as recognizer information for
+ * automatically applied tags.
+ *
+ * Additional metadata associated with a tag label, including information about how the tag
+ * was applied.
+ */
+export interface TagLabelMetadata {
+    /**
+     * Epoch time in milliseconds when the certification tag expires
+     */
+    expiryDate?: number;
+    /**
+     * Metadata about the recognizer that automatically applied this tag
+     */
+    recognizer?: TagLabelRecognizerMetadata;
+}
+
+/**
+ * Metadata about the recognizer that automatically applied this tag
+ *
+ * Metadata about the recognizer that applied a tag, including scoring and pattern
+ * information.
+ */
+export interface TagLabelRecognizerMetadata {
+    /**
+     * Details of patterns that matched during recognition
+     */
+    patterns?: PatternMatch[];
+    /**
+     * Unique identifier of the recognizer that applied this tag
+     */
+    recognizerId: string;
+    /**
+     * Human-readable name of the recognizer
+     */
+    recognizerName: string;
+    /**
+     * Confidence score assigned by the recognizer (0.0 to 1.0)
+     */
+    score: number;
+    /**
+     * What the recognizer analyzed to apply this tag
+     */
+    target?: Target;
+}
+
+/**
+ * Information about a pattern that matched during recognition
+ */
+export interface PatternMatch {
+    /**
+     * Name of the pattern that matched
+     */
+    name: string;
+    /**
+     * Regular expression or pattern definition
+     */
+    regex?: string;
+    /**
+     * Confidence score for this specific pattern match
+     */
+    score: number;
+}
+
+/**
+ * What the recognizer analyzed to apply this tag
+ */
+export enum Target {
+    ColumnName = "column_name",
+    Content = "content",
 }
 
 /**

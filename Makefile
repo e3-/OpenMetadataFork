@@ -13,7 +13,7 @@ prerequisites:
 .PHONY: install_e2e_tests
 install_e2e_tests:  ## Install the ingestion module with e2e test dependencies (playwright)
 	python -m pip install "ingestion[e2e_test]/"
-	playwright install --with-deps
+	playwright install chromium --with-deps
 
 .PHONY: run_e2e_tests
 run_e2e_tests: ## Run e2e tests
@@ -147,6 +147,7 @@ build-ingestion-base-local:  ## Builds the ingestion DEV docker operator with th
 update_all:  ## To update all the release related files run make update_all RELEASE_VERSION=2.2.2
 	@echo "The release version is: $(RELEASE_VERSION)" ; \
 	$(MAKE) update_maven ; \
+	$(MAKE) update_openapi_version ; \
 	$(MAKE) update_pyproject_version ; \
 	$(MAKE) update_dockerfile_version ; \
 	$(MAKE) update_dockerfile_ri_version ; \
@@ -160,6 +161,11 @@ update_maven:  ## To update the common and pom.xml maven version
 #remove comment and use the below section when want to use this sub module "update_maven" independently to update github actions
 #make update_maven RELEASE_VERSION=2.2.2
 
+.PHONY: update_openapi_version
+update_openapi_version:  ## To update the OpenAPI version in OpenMetadataApplication.java
+	@echo "Updating OpenAPI version to $(RELEASE_VERSION)..."; \
+	python3 scripts/update_version.py update_openapi_version -v $(RELEASE_VERSION)
+#make update_openapi_version RELEASE_VERSION=2.2.2
 
 .PHONY: update_pyproject_version
 update_pyproject_version:  ## To update the pyproject.toml files
@@ -205,3 +211,65 @@ update_typescript_types:
 	./openmetadata-ui/src/main/resources/ui/json2ts-generate-all.sh -l true
 	@echo "Generating antlr typescript files"
 	$(MAKE) js_antlr
+
+# Fix license header in all UI files.
+.PHONY: license-header-fix
+license-header-fix:
+	cd openmetadata-ui/src/main/resources/ui && yarn install --frozen-lockfile && yarn license-header-fix
+
+# Run TypeScript type-checking for src files (does not auto-fix errors).
+.PHONY: tsc-src-fix
+tsc-src-fix:
+	cd openmetadata-ui/src/main/resources/ui && yarn install --frozen-lockfile && yarn tsc:check
+
+# Run TypeScript type-checking for Playwright files (does not auto-fix errors).
+.PHONY: tsc-playwright-fix
+tsc-playwright-fix:
+	cd openmetadata-ui/src/main/resources/ui && yarn install --frozen-lockfile && yarn tsc:playwright
+
+# Sync all i18n files to have the same keys and order. This doesn't modify the translation.
+# Just makes sure all files have the same keys in the same order to avoid conflicts and make it easier to maintain.
+.PHONY: i18n-sync-fix
+i18n-sync-fix:
+	cd openmetadata-ui/src/main/resources/ui && yarn install --frozen-lockfile && yarn i18n
+
+# Generate the docs markdown file for all applications.
+.PHONY: generate-app-docs
+generate-app-docs:
+	cd openmetadata-ui/src/main/resources/ui && yarn install --frozen-lockfile && yarn generate:app-docs
+
+# Fix all linting and formatting errors in src folder.
+.PHONY: ui-checkstyle-src
+ui-checkstyle-src:
+	cd openmetadata-ui/src/main/resources/ui && yarn install --frozen-lockfile && yarn ui-checkstyle
+
+# Fix all linting and formatting errors in playwright tests.
+.PHONY: ui-checkstyle-playwright
+ui-checkstyle-playwright:
+	cd openmetadata-ui/src/main/resources/ui && yarn install --frozen-lockfile && yarn ui-checkstyle:playwright
+
+# Fix all linting and formatting errors in core components.
+.PHONY: ui-checkstyle-core-components
+ui-checkstyle-core-components:
+	cd openmetadata-ui-core-components/src/main/resources/ui && yarn install --frozen-lockfile && yarn lint:fix && yarn pretty
+
+# Fix linting and formatting errors in changed files in src folder
+# Changed files are detected based on the current branch against main branch. 
+# So make sure to run this after rebasing to main to get the correct list of changed files.
+.PHONY: ui-checkstyle-src-changed
+ui-checkstyle-src-changed:
+	cd openmetadata-ui/src/main/resources/ui && yarn install --frozen-lockfile && yarn ui-checkstyle:changed
+
+# Fix linting and formatting errors in changed playwright test files
+# Changed files are detected based on the current branch against main branch. 
+# So make sure to run this after rebasing to main to get the correct list of changed files.
+.PHONY: ui-checkstyle-playwright-changed
+ui-checkstyle-playwright-changed:
+	cd openmetadata-ui/src/main/resources/ui && yarn install --frozen-lockfile && yarn ui-checkstyle:playwright:changed
+
+# Fix linting and formatting errors in changed core components files
+# Changed files are detected based on the current branch against main branch. 
+# So make sure to run this after rebasing to main to get the correct list of changed files.
+.PHONY: ui-checkstyle-core-components-changed
+ui-checkstyle-core-components-changed:
+	cd openmetadata-ui-core-components/src/main/resources/ui && yarn install --frozen-lockfile && yarn ui-checkstyle:changed

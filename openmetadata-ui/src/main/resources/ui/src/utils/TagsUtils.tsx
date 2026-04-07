@@ -606,18 +606,6 @@ export const getTagAssetsQueryFilter = (fqn: string) => {
   return getTermQuery({ [fieldName]: fqn });
 };
 
-export const getTagImageSrc = (iconURL: string) => {
-  if (!iconURL) {
-    return '';
-  }
-
-  if (iconURL.startsWith('http') || iconURL.startsWith('data:image')) {
-    return iconURL;
-  }
-
-  return `${window.location.origin}/${iconURL}`;
-};
-
 /**
  * Check if a tag is a glossary tag
  */
@@ -654,6 +642,14 @@ export const getTagRedirectLink = (
     ? getGlossaryPath(tag.tagFQN)
     : getClassificationTagPath(tag.tagFQN);
 };
+
+export const getGlossaryTags = (tags: TagLabel[] | undefined): TagLabel[] =>
+  tags?.filter((tag) => tag.source === TagSource.Glossary) ?? [];
+
+export const getClassificationTags = (
+  tags: TagLabel[] | undefined
+): TagLabel[] =>
+  tags?.filter((tag) => tag.source === TagSource.Classification) ?? [];
 
 export const TagListItemRenderer = (props: EntityReference) => {
   return (

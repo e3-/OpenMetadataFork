@@ -59,7 +59,7 @@ public class RunAppImpl {
       app =
           appRepository.getByName(null, appName, new EntityUtil.Fields(Set.of("bot", "pipelines")));
     } catch (EntityNotFoundException ex) {
-      LOG.warn(String.format("App: '%s' is not Installed. Skipping", appName));
+      LOG.warn("App: '{}' is not Installed. Skipping", appName);
       return wasSuccessful;
     }
 
@@ -256,7 +256,7 @@ public class RunAppImpl {
 
     pipelineServiceClient.deployPipeline(
         ingestionPipeline,
-        Entity.getEntity(ingestionPipeline.getService(), "", Include.NON_DELETED));
+        Entity.getEntity(ingestionPipeline.getService(), "ingestionRunner", Include.NON_DELETED));
 
     return ingestionPipeline;
   }
@@ -272,7 +272,7 @@ public class RunAppImpl {
 
     pipelineServiceClient.runPipeline(
         ingestionPipeline,
-        Entity.getEntity(ingestionPipeline.getService(), "", Include.NON_DELETED));
+        Entity.getEntity(ingestionPipeline.getService(), "ingestionRunner", Include.NON_DELETED));
 
     if (waitForCompletion) {
       return waitForCompletion(repository, ingestionPipeline, startTime, timeoutMillis);

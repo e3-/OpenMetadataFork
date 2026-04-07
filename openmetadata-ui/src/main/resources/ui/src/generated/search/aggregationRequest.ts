@@ -1,5 +1,5 @@
 /*
- *  Copyright 2025 Collate.
+ *  Copyright 2026 Collate.
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
@@ -34,6 +34,10 @@ export interface AggregationRequest {
      * Query string to be sent to the search engine.
      */
     query?: string;
+    /**
+     * Free-text search query used to scope aggregation results to matching documents.
+     */
+    queryText?: string;
     /**
      * Size to limit the number of aggregation buckets returned.
      */

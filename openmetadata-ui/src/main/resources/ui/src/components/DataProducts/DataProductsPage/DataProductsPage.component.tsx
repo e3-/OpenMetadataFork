@@ -18,13 +18,14 @@ import { toString } from 'lodash';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
-import { ROUTES } from '../../../constants/constants';
+import { QueryVote } from '../../../components/Database/TableQueries/TableQueries.interface';
 import { ERROR_PLACEHOLDER_TYPE } from '../../../enums/common.enum';
 import { EntityType, TabSpecificField } from '../../../enums/entity.enum';
 import { DataProduct } from '../../../generated/entity/domains/dataProduct';
 import { EntityHistory } from '../../../generated/type/entityHistory';
 import { useApplicationStore } from '../../../hooks/useApplicationStore';
 import { useFqn } from '../../../hooks/useFqn';
+import { useMarketplaceStore } from '../../../hooks/useMarketplaceStore';
 import {
   addFollower,
   deleteDataProduct,
@@ -33,13 +34,11 @@ import {
   getDataProductVersionsList,
   patchDataProduct,
   removeFollower,
+  updateDataProductVotes,
 } from '../../../rest/dataProductAPI';
 import { getEntityName } from '../../../utils/EntityUtils';
-import {
-  getDomainPath,
-  getEntityDetailsPath,
-  getVersionPath,
-} from '../../../utils/RouterUtils';
+import { getDomainPath, getVersionPath } from '../../../utils/RouterUtils';
+import { getEncodedFqn } from '../../../utils/StringsUtils';
 import { showErrorToast, showSuccessToast } from '../../../utils/ToastUtils';
 import { useRequiredParams } from '../../../utils/useRequiredParams';
 import ErrorPlaceHolder from '../../common/ErrorWithPlaceholder/ErrorPlaceHolder';
@@ -51,6 +50,7 @@ import DataProductsDetailsPage from '../DataProductsDetailsPage/DataProductsDeta
 const DataProductsPage = () => {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const { dataProductBasePath } = useMarketplaceStore();
   const { version } = useRequiredParams<{ version: string }>();
   const { currentUser } = useApplicationStore();
   const currentUserId = currentUser?.id ?? '';
@@ -81,14 +81,15 @@ const DataProductsPage = () => {
 
         if (dataProduct?.name !== updatedData.name) {
           navigate(
-            getEntityDetailsPath(
-              EntityType.DATA_PRODUCT,
+            `${dataProductBasePath}/${getEncodedFqn(
               response.fullyQualifiedName ?? ''
-            )
+            )}`
           );
         }
       } catch (error) {
         showErrorToast(error as AxiosError);
+
+        throw error;
       }
     }
   };
@@ -105,7 +106,7 @@ const DataProductsPage = () => {
           entity: t('label.data-product'),
         })
       );
-      navigate(ROUTES.DATA_PRODUCT);
+      navigate(dataProductBasePath);
     } catch (err) {
       showErrorToast(
         err as AxiosError,
@@ -129,6 +130,8 @@ const DataProductsPage = () => {
           TabSpecificField.TAGS,
           TabSpecificField.FOLLOWERS,
           TabSpecificField.REVIEWERS,
+          TabSpecificField.VOTES,
+          TabSpecificField.CERTIFICATION,
         ],
       });
       setDataProduct(data);
@@ -182,7 +185,7 @@ const DataProductsPage = () => {
   };
 
   const onBackHandler = () => {
-    navigate(getEntityDetailsPath(EntityType.DATA_PRODUCT, dataProductFqn));
+    navigate(`${dataProductBasePath}/${getEncodedFqn(dataProductFqn)}`);
   };
 
   const followDataProduct = async () => {
@@ -245,6 +248,44 @@ const DataProductsPage = () => {
     setIsFollowingLoading(false);
   }, [isFollowing, unFollowDataProduct, followDataProduct]);
 
+  // Refresh data product without showing loader (for port updates)
+  const refreshDataProduct = useCallback(async () => {
+    if (!dataProductFqn) {
+      return;
+    }
+    try {
+      const data = await getDataProductByName(dataProductFqn, {
+        fields: [
+          TabSpecificField.DOMAINS,
+          TabSpecificField.OWNERS,
+          TabSpecificField.EXPERTS,
+          TabSpecificField.ASSETS,
+          TabSpecificField.EXTENSION,
+          TabSpecificField.TAGS,
+          TabSpecificField.FOLLOWERS,
+          TabSpecificField.REVIEWERS,
+          TabSpecificField.VOTES,
+          TabSpecificField.CERTIFICATION,
+        ],
+      });
+      setDataProduct(data);
+    } catch (error) {
+      showErrorToast(error as AxiosError);
+    }
+  }, [dataProductFqn]);
+
+  const handleUpdateVote = useCallback(
+    async (data: QueryVote, id: string) => {
+      try {
+        await updateDataProductVotes(id, data);
+        await refreshDataProduct();
+      } catch (error) {
+        showErrorToast(error as AxiosError);
+      }
+    },
+    [refreshDataProduct]
+  );
+
   useEffect(() => {
     if (dataProductFqn) {
       fetchDataProductByFqn(dataProductFqn);
@@ -283,7 +324,7 @@ const DataProductsPage = () => {
         className={classNames('data-product-page-layout', {
           'version-data': version,
         })}
-        pageTitle={t('label.data-product')}>
+        pageTitle={getEntityName(dataProduct)}>
         <DataProductsDetailsPage
           dataProduct={
             version ? selectedVersionData ?? dataProduct : dataProduct
@@ -293,7 +334,9 @@ const DataProductsPage = () => {
           isFollowingLoading={isFollowingLoading}
           isVersionsView={Boolean(version)}
           onDelete={handleDataProductDelete}
+          onRefresh={refreshDataProduct}
           onUpdate={handleDataProductUpdate}
+          onUpdateVote={handleUpdateVote}
         />
       </PageLayoutV1>
 

@@ -29,9 +29,8 @@
           ]
         },
         "om_ngram": {
-          "tokenizer": "ngram",
-          "min_gram": 1,
-          "max_gram": 2,
+          "type": "custom",
+          "tokenizer": "n_gram_tokenizer",
           "filter": [
             "lowercase"
           ]
@@ -62,13 +61,39 @@
           "preserve_original": true,
           "stem_english_possessive": true
         }
+      },
+      "tokenizer": {
+        "n_gram_tokenizer": {
+          "type": "ngram",
+          "min_gram": 1,
+          "max_gram": 2,
+          "token_chars": [
+            "letter",
+            "digit"
+          ]
+        }
       }
+    },
+    "index": {
+      "max_ngram_diff": 1
     }
   },
   "mappings": {
     "properties": {
+      "changeDescription": {
+        "enabled": false
+      },
+      "incrementalChangeDescription": {
+        "enabled": false
+      },
       "id": {
-        "type": "text"
+        "type": "text",
+        "fields": {
+          "keyword": {
+            "type": "keyword",
+            "ignore_above": 256
+          }
+        }
       },
       "name": {
         "type": "text",
@@ -142,8 +167,11 @@
       "mimeType": {
         "type": "keyword"
       },
-      "extension": {
+      "fileExtension": {
         "type": "keyword"
+      },
+      "extension": {
+        "type": "flattened"
       },
       "path": {
         "type": "keyword"
@@ -261,6 +289,7 @@
         }
       },
       "owners": {
+        "type": "nested",
         "properties": {
           "id": {
             "type": "keyword",
@@ -434,6 +463,10 @@
                 "type": "long"
               }
             }
+          },
+          "date": {
+            "type": "date",
+            "format": "strict_date_optional_time||yyyy-MM-dd HH:mm:ss||epoch_millis"
           }
         }
       },
@@ -671,6 +704,71 @@
             "ignore_above": 512
           }
         }
+      },
+      "customPropertiesTyped": {
+        "type": "nested",
+        "properties": {
+          "name": {
+            "type": "keyword"
+          },
+          "propertyType": {
+            "type": "keyword"
+          },
+          "stringValue": {
+            "type": "keyword"
+          },
+          "textValue": {
+            "type": "text",
+            "analyzer": "om_analyzer"
+          },
+          "longValue": {
+            "type": "long"
+          },
+          "doubleValue": {
+            "type": "double"
+          },
+          "start": {
+            "type": "long"
+          },
+          "end": {
+            "type": "long"
+          },
+          "refId": {
+            "type": "keyword"
+          },
+          "refType": {
+            "type": "keyword"
+          },
+          "refName": {
+            "type": "keyword"
+          },
+          "refFqn": {
+            "type": "keyword"
+          }
+        }
+      },
+      "fingerprint": {
+        "type": "keyword"
+      },
+      "textToEmbed": {
+        "type": "text"
+      },
+      "chunkIndex": {
+        "type": "integer"
+      },
+      "chunkCount": {
+        "type": "integer"
+      },
+      "parentId": {
+        "type": "keyword"
+      },
+      "ownerDisplayName": {
+        "type": "keyword",
+        "normalizer": "lowercase_normalizer"
+      },
+      "ownerName": {
+        "type": "keyword",
+        "normalizer": "lowercase_normalizer"
       }
     }
   }

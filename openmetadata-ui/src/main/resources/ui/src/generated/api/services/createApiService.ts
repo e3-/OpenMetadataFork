@@ -1,5 +1,5 @@
 /*
- *  Copyright 2025 Collate.
+ *  Copyright 2026 Collate.
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
@@ -67,13 +67,18 @@ export interface RESTConnection {
      */
     apiCollectionFilterPattern?: FilterPattern;
     /**
+     * Regex to only fetch api endpoints with names matching the pattern.
+     */
+    apiEndpointFilterPattern?: FilterPattern;
+    /**
      * Documentation URL for the schema.
      */
     docURL?: string;
     /**
-     * Open API Schema URL.
+     * OpenAPI Schema source config. Either a URL or a file path must be provided.
      */
-    openAPISchemaURL: string;
+    openAPISchemaConnection: OpenAPISchemaConnection;
+    sslConfig?:              Config;
     /**
      * Supports Metadata Extraction.
      */
@@ -86,12 +91,18 @@ export interface RESTConnection {
      * REST API Type
      */
     type?: RESTType;
+    /**
+     * Client SSL verification. Make sure to configure the SSLConfig if enabled.
+     */
+    verifySSL?: VerifySSL;
 }
 
 /**
  * Regex to only fetch api collections with names matching the pattern.
  *
  * Regex to only fetch entities that matches the pattern.
+ *
+ * Regex to only fetch api endpoints with names matching the pattern.
  */
 export interface FilterPattern {
     /**
@@ -105,12 +116,124 @@ export interface FilterPattern {
 }
 
 /**
+ * OpenAPI Schema source config. Either a URL or a file path must be provided.
+ *
+ * Open API Schema URL Connection Config
+ *
+ * Open API Schema File Path Connection Config
+ *
+ * Open API Schema S3 Connection Config
+ */
+export interface OpenAPISchemaConnection {
+    /**
+     * Open API Schema URL.
+     */
+    openAPISchemaURL?: string;
+    /**
+     * Path to a local OpenAPI schema file.
+     */
+    openAPISchemaFilePath?: string;
+    /**
+     * AWS credentials required to access the S3 file.
+     */
+    awsCredentials?: AWSCredentials;
+    /**
+     * S3 URL of the OpenAPI schema file (JSON or YAML). Example:
+     * https://bucket-name.s3.amazonaws.com/path/to/openapi_schema.json
+     */
+    openAPISchemaS3URL?: string;
+}
+
+/**
+ * AWS credentials required to access the S3 file.
+ *
+ * AWS credentials configs.
+ */
+export interface AWSCredentials {
+    /**
+     * The Amazon Resource Name (ARN) of the role to assume. Required Field in case of Assume
+     * Role
+     */
+    assumeRoleArn?: string;
+    /**
+     * An identifier for the assumed role session. Use the role session name to uniquely
+     * identify a session when the same role is assumed by different principals or for different
+     * reasons. Required Field in case of Assume Role
+     */
+    assumeRoleSessionName?: string;
+    /**
+     * The Amazon Resource Name (ARN) of the role to assume. Optional Field in case of Assume
+     * Role
+     */
+    assumeRoleSourceIdentity?: string;
+    /**
+     * AWS Access key ID.
+     */
+    awsAccessKeyId?: string;
+    /**
+     * AWS Region
+     */
+    awsRegion: string;
+    /**
+     * AWS Secret Access Key.
+     */
+    awsSecretAccessKey?: string;
+    /**
+     * AWS Session Token.
+     */
+    awsSessionToken?: string;
+    /**
+     * Enable AWS IAM authentication. When enabled, uses the default credential provider chain
+     * (environment variables, instance profile, etc.). Defaults to false for backward
+     * compatibility.
+     */
+    enabled?: boolean;
+    /**
+     * EndPoint URL for the AWS
+     */
+    endPointURL?: string;
+    /**
+     * The name of a profile to use with the boto session.
+     */
+    profileName?: string;
+}
+
+/**
+ * Client SSL configuration
+ *
+ * OpenMetadata Client configured to validate SSL certificates.
+ */
+export interface Config {
+    /**
+     * The CA certificate used for SSL validation.
+     */
+    caCertificate?: string;
+    /**
+     * The SSL certificate used for client authentication.
+     */
+    sslCertificate?: string;
+    /**
+     * The private key associated with the SSL certificate.
+     */
+    sslKey?: string;
+}
+
+/**
  * REST API Type
  *
  * REST API type
  */
 export enum RESTType {
     REST = "Rest",
+}
+
+/**
+ * Client SSL verification. Make sure to configure the SSLConfig if enabled.
+ */
+export enum VerifySSL {
+    Ignore = "ignore",
+    NoSSL = "no-ssl",
+    Validate = "validate",
 }
 
 /**
@@ -184,6 +307,14 @@ export enum APIServiceType {
  */
 export interface TagLabel {
     /**
+     * Timestamp when this tag was applied in ISO 8601 format
+     */
+    appliedAt?: Date;
+    /**
+     * Who it is that applied this tag (e.g: a bot, AI or a human)
+     */
+    appliedBy?: string;
+    /**
      * Description for the tag label.
      */
     description?: string;
@@ -203,6 +334,11 @@ export interface TagLabel {
      * used to determine the tag label.
      */
     labelType: LabelType;
+    /**
+     * Additional metadata associated with this tag label, such as recognizer information for
+     * automatically applied tags.
+     */
+    metadata?: TagLabelMetadata;
     /**
      * Name of the tag or glossary term.
      */
@@ -237,6 +373,79 @@ export enum LabelType {
     Generated = "Generated",
     Manual = "Manual",
     Propagated = "Propagated",
+}
+
+/**
+ * Additional metadata associated with this tag label, such as recognizer information for
+ * automatically applied tags.
+ *
+ * Additional metadata associated with a tag label, including information about how the tag
+ * was applied.
+ */
+export interface TagLabelMetadata {
+    /**
+     * Epoch time in milliseconds when the certification tag expires
+     */
+    expiryDate?: number;
+    /**
+     * Metadata about the recognizer that automatically applied this tag
+     */
+    recognizer?: TagLabelRecognizerMetadata;
+}
+
+/**
+ * Metadata about the recognizer that automatically applied this tag
+ *
+ * Metadata about the recognizer that applied a tag, including scoring and pattern
+ * information.
+ */
+export interface TagLabelRecognizerMetadata {
+    /**
+     * Details of patterns that matched during recognition
+     */
+    patterns?: PatternMatch[];
+    /**
+     * Unique identifier of the recognizer that applied this tag
+     */
+    recognizerId: string;
+    /**
+     * Human-readable name of the recognizer
+     */
+    recognizerName: string;
+    /**
+     * Confidence score assigned by the recognizer (0.0 to 1.0)
+     */
+    score: number;
+    /**
+     * What the recognizer analyzed to apply this tag
+     */
+    target?: Target;
+}
+
+/**
+ * Information about a pattern that matched during recognition
+ */
+export interface PatternMatch {
+    /**
+     * Name of the pattern that matched
+     */
+    name: string;
+    /**
+     * Regular expression or pattern definition
+     */
+    regex?: string;
+    /**
+     * Confidence score for this specific pattern match
+     */
+    score: number;
+}
+
+/**
+ * What the recognizer analyzed to apply this tag
+ */
+export enum Target {
+    ColumnName = "column_name",
+    Content = "content",
 }
 
 /**

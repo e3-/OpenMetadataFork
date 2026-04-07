@@ -23,6 +23,7 @@ import {
   getSortOrder,
 } from '../../../../constants/Widgets.constant';
 import { DataProduct } from '../../../../generated/entity/domains/dataProduct';
+import { getAllDataProductsWithAssetsCount } from '../../../../rest/dataProductAPI';
 import { searchData } from '../../../../rest/miscAPI';
 import DataProductsWidget from './DataProductsWidget.component';
 
@@ -85,7 +86,7 @@ const mockSearchResponse = {
     hits: {
       hits: mockDataProducts.map((product) => ({
         _source: product,
-        _index: 'data_product_search_index',
+        _index: 'dataProduct',
         _id: product.id,
       })),
       total: { value: mockDataProducts.length },
@@ -101,6 +102,10 @@ const mockSearchResponse = {
 // Mock API functions
 jest.mock('../../../../rest/miscAPI', () => ({
   searchData: jest.fn(),
+}));
+
+jest.mock('../../../../rest/dataProductAPI', () => ({
+  getAllDataProductsWithAssetsCount: jest.fn(),
 }));
 
 jest.mock('../../../../constants/Widgets.constant', () => ({
@@ -123,6 +128,11 @@ jest.mock('react-router-dom', () => ({
   useNavigate: () => mockNavigate,
 }));
 
+const mockGetAllDataProductsWithAssetsCount =
+  getAllDataProductsWithAssetsCount as jest.MockedFunction<
+    typeof getAllDataProductsWithAssetsCount
+  >;
+
 describe('DataProductsWidget', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -130,6 +140,11 @@ describe('DataProductsWidget', () => {
     (getSortField as jest.Mock).mockReturnValue('updatedAt');
     (getSortOrder as jest.Mock).mockReturnValue('desc');
     (applySortToData as jest.Mock).mockImplementation((data) => data);
+    mockGetAllDataProductsWithAssetsCount.mockResolvedValue({
+      'customer-360': 1,
+      'sales-analytics': 2,
+      'marketing-insights': 3,
+    });
   });
 
   const renderDataProductsWidget = (props = {}) => {
@@ -166,7 +181,7 @@ describe('DataProductsWidget', () => {
         '',
         'updatedAt',
         'desc',
-        'data_product_search_index'
+        'dataProduct'
       );
     });
 
@@ -275,7 +290,7 @@ describe('DataProductsWidget', () => {
         hits: {
           hits: manyDataProducts.map((product) => ({
             _source: product,
-            _index: 'data_product_search_index',
+            _index: 'dataProduct',
             _id: product.id,
           })),
           total: { value: manyDataProducts.length },

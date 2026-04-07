@@ -11,11 +11,11 @@ import org.openmetadata.schema.tests.type.TestCaseDimensionResult;
 import org.openmetadata.schema.utils.JsonUtils;
 import org.openmetadata.schema.utils.ResultList;
 import org.openmetadata.service.Entity;
+import org.openmetadata.service.resources.dqtests.TestCaseDimensionResultResource;
 
 @Slf4j
 public class TestCaseDimensionResultRepository
     extends EntityTimeSeriesRepository<TestCaseDimensionResult> {
-  public static final String COLLECTION_PATH = "/v1/dataQuality/testCases/dimensionResults";
   public static final String TEST_CASE_DIMENSION_RESULT_EXTENSION = "testCase.dimensionResult";
   private static final String TEST_CASE_DIMENSION_RESULT_FIELD = "dimensionResult";
 
@@ -23,7 +23,7 @@ public class TestCaseDimensionResultRepository
 
   public TestCaseDimensionResultRepository() {
     super(
-        COLLECTION_PATH,
+        TestCaseDimensionResultResource.COLLECTION_PATH,
         Entity.getCollectionDAO().testCaseDimensionResultTimeSeriesDao(),
         TestCaseDimensionResult.class,
         Entity.TEST_CASE_DIMENSION_RESULT);
@@ -112,12 +112,11 @@ public class TestCaseDimensionResultRepository
    */
   public void storeDimensionResult(String testCaseFQN, TestCaseDimensionResult dimensionResult) {
     // Store the dimensional result using FQN as the entity hash
-    ((CollectionDAO.TestCaseDimensionResultTimeSeriesDAO) timeSeriesDao)
-        .insert(
-            testCaseFQN, // Use FQN as the entity hash
-            TEST_CASE_DIMENSION_RESULT_EXTENSION,
-            TEST_CASE_DIMENSION_RESULT_FIELD,
-            JsonUtils.pojoToJson(dimensionResult));
+    timeSeriesDao.insert(
+        testCaseFQN, // Use FQN as the entity hash
+        TEST_CASE_DIMENSION_RESULT_EXTENSION,
+        TEST_CASE_DIMENSION_RESULT_FIELD,
+        JsonUtils.pojoToJson(dimensionResult));
   }
 
   /**

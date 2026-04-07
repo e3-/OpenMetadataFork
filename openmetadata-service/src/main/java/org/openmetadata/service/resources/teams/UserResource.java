@@ -176,7 +176,7 @@ import org.openmetadata.service.util.email.TemplateConstants;
     order = 3,
     requiredForOps = true) // Initialize user resource before bot resource (at default order 9)
 public class UserResource extends EntityResource<User, UserRepository> {
-  public static final String COLLECTION_PATH = "v1/users/";
+  public static final String COLLECTION_PATH = "/v1/users/";
   public static final String USER_PROTECTED_FIELDS = "authenticationMechanism";
   private final JWTTokenGenerator jwtTokenGenerator;
   private final TokenRepository tokenRepository;
@@ -526,7 +526,7 @@ public class UserResource extends EntityResource<User, UserRepository> {
 
     // Sync the Roles from token to User
     if (Boolean.TRUE.equals(authorizerConfiguration.getUseRolesFromProvider())
-        && Boolean.FALSE.equals(user.getIsBot() != null && user.getIsBot())) {
+        && !(user.getIsBot() != null && user.getIsBot())) {
       reSyncUserRolesFromToken(
           uriInfo, user, getRolesFromAuthorizationToken(catalogSecurityContext));
     }
@@ -715,7 +715,7 @@ public class UserResource extends EntityResource<User, UserRepository> {
     CatalogSecurityContext catalogSecurityContext =
         (CatalogSecurityContext) containerRequestContext.getSecurityContext();
     if (Boolean.TRUE.equals(authorizerConfiguration.getUseRolesFromProvider())
-        && Boolean.FALSE.equals(user.getIsBot() != null && user.getIsBot())) {
+        && !(user.getIsBot() != null && user.getIsBot())) {
       user.setRoles(validateAndGetRolesRef(getRolesFromAuthorizationToken(catalogSecurityContext)));
     }
   }
@@ -732,7 +732,7 @@ public class UserResource extends EntityResource<User, UserRepository> {
                 create.getCreatePasswordType(),
                 create.getPassword());
       } catch (Exception ex) {
-        LOG.error("Error in sending invite to User" + ex.getMessage());
+        LOG.error("Error in sending invite to User{}", ex.getMessage());
       }
     }
   }
@@ -810,8 +810,20 @@ public class UserResource extends EntityResource<User, UserRepository> {
       @Parameter(description = "Id of the user", schema = @Schema(type = "UUID")) @PathParam("id")
           UUID id,
       @Valid GenerateTokenRequest generateTokenRequest) {
-    authorizer.authorizeAdmin(securityContext);
+    // Users with EDIT permission on the bot can generate tokens
+    OperationContext operationContext =
+        new OperationContext(entityType, MetadataOperation.EDIT_ALL);
+    ResourceContext<?> resourceContext = getResourceContextById(id);
+    authorizer.authorize(securityContext, operationContext, resourceContext);
     User user = repository.get(uriInfo, id, repository.getFieldsWithUserAuth("*"));
+
+    // Only allow token generation for bot users via this endpoint
+    if (!Boolean.TRUE.equals(user.getIsBot())) {
+      throw new AuthorizationException(
+          "This endpoint can only generate tokens for bot users. "
+              + "Use POST /users/generateToken for self-service token generation.");
+    }
+
     JWTAuthMechanism jwtAuthMechanism =
         jwtTokenGenerator.generateJWTToken(user, generateTokenRequest.getJWTTokenExpiry());
     AuthenticationMechanism authenticationMechanism =
@@ -819,13 +831,79 @@ public class UserResource extends EntityResource<User, UserRepository> {
             .withConfig(jwtAuthMechanism)
             .withAuthType(AuthenticationMechanism.AuthType.JWT);
     user.setAuthenticationMechanism(authenticationMechanism);
-    User updatedUser =
-        repository
-            .createOrUpdate(uriInfo, user, securityContext.getUserPrincipal().getName())
-            .getEntity();
-    jwtAuthMechanism =
-        JsonUtils.convertValue(
-            updatedUser.getAuthenticationMechanism().getConfig(), JWTAuthMechanism.class);
+    repository.createOrUpdate(uriInfo, user, securityContext.getUserPrincipal().getName());
+
+    // Invalidate cached token for bot user
+    BotTokenCache.invalidateToken(user.getName());
+
+    return Response.status(Response.Status.OK).entity(jwtAuthMechanism).build();
+  }
+
+  @POST
+  @Path("/generateToken")
+  @Operation(
+      operationId = "generateJWTTokenForUser",
+      summary = "Generate JWT Token for a User",
+      description =
+          "Generate JWT Token for a user. Users with EDIT permission can generate tokens for bot users, "
+              + "and users can generate their own tokens. Regular users cannot generate tokens for other regular users.",
+      responses = {
+        @ApiResponse(
+            responseCode = "200",
+            description = "The JWT auth mechanism with the generated token",
+            content =
+                @Content(
+                    mediaType = "application/json",
+                    schema = @Schema(implementation = JWTAuthMechanism.class))),
+        @ApiResponse(responseCode = "400", description = "Bad request"),
+        @ApiResponse(responseCode = "403", description = "Forbidden - User not authorized")
+      })
+  public Response generateTokenWithId(
+      @Context UriInfo uriInfo,
+      @Context SecurityContext securityContext,
+      @Valid GenerateTokenRequest generateTokenRequest) {
+    UUID userId = generateTokenRequest.getId();
+    if (userId == null) {
+      throw new IllegalArgumentException("User ID is required for token generation");
+    }
+
+    User user = repository.get(uriInfo, userId, repository.getFieldsWithUserAuth("*"));
+
+    // Permission check: admins can generate tokens for bot users,
+    // users can generate their own tokens
+    String currentUserName = securityContext.getUserPrincipal().getName();
+    boolean isCurrentUser = currentUserName.equalsIgnoreCase(user.getName());
+    boolean isBotUser = Boolean.TRUE.equals(user.getIsBot());
+
+    if (isBotUser) {
+      // For bot users, users with EDIT permission on the bot can generate tokens
+      OperationContext operationContext =
+          new OperationContext(entityType, MetadataOperation.EDIT_ALL);
+      ResourceContext<?> resourceContext = getResourceContextById(userId);
+      authorizer.authorize(securityContext, operationContext, resourceContext);
+    } else if (!isCurrentUser) {
+      // For non-bot users, only the user themselves can generate their own token
+      // No one else can generate tokens for regular users (prevents impersonation)
+      throw new AuthorizationException(
+          "Users can only generate tokens for themselves. "
+              + "Use the bot user API to generate tokens for bots.");
+    }
+
+    JWTAuthMechanism jwtAuthMechanism =
+        jwtTokenGenerator.generateJWTToken(user, generateTokenRequest.getJWTTokenExpiry());
+    AuthenticationMechanism authenticationMechanism =
+        new AuthenticationMechanism()
+            .withConfig(jwtAuthMechanism)
+            .withAuthType(AuthenticationMechanism.AuthType.JWT);
+    user.setAuthenticationMechanism(authenticationMechanism);
+    repository.createOrUpdate(uriInfo, user, securityContext.getUserPrincipal().getName());
+
+    // Invalidate any cached token for this user
+    if (isBotUser) {
+      BotTokenCache.invalidateToken(user.getName());
+    } else {
+      UserTokenCache.invalidateToken(user.getName());
+    }
     return Response.status(Response.Status.OK).entity(jwtAuthMechanism).build();
   }
 
@@ -1280,7 +1358,7 @@ public class UserResource extends EntityResource<User, UserRepository> {
               EmailUtil.getPasswordResetSubject(),
               TemplateConstants.RESET_LINK_TEMPLATE);
     } catch (Exception ex) {
-      LOG.error("Error in sending mail for reset password" + ex.getMessage());
+      LOG.error("Error in sending mail for reset password{}", ex.getMessage());
       return Response.status(424).entity(new ErrorMessage(424, EMAIL_SENDING_ISSUE)).build();
     }
     return Response.status(Response.Status.OK)
@@ -1650,6 +1728,7 @@ public class UserResource extends EntityResource<User, UserRepository> {
                     schema = @Schema(implementation = CsvImportResult.class)))
       })
   public CsvImportResult importCsv(
+      @Context UriInfo uriInfo,
       @Context SecurityContext securityContext,
       @Parameter(
               description = "Name of the team to under which the users are imported to",
@@ -1666,7 +1745,7 @@ public class UserResource extends EntityResource<User, UserRepository> {
           boolean dryRun,
       String csv)
       throws IOException {
-    return importCsvInternal(securityContext, team, csv, dryRun, false);
+    return importCsvInternal(uriInfo, securityContext, team, csv, dryRun, false);
   }
 
   @PUT
@@ -1686,6 +1765,7 @@ public class UserResource extends EntityResource<User, UserRepository> {
                     schema = @Schema(implementation = CsvImportResult.class)))
       })
   public Response importCsvAsync(
+      @Context UriInfo uriInfo,
       @Context SecurityContext securityContext,
       @Parameter(
               description = "Name of the team to under which the users are imported to",
@@ -1701,7 +1781,7 @@ public class UserResource extends EntityResource<User, UserRepository> {
           @QueryParam("dryRun")
           boolean dryRun,
       String csv) {
-    return importCsvInternalAsync(securityContext, team, csv, dryRun, false);
+    return importCsvInternalAsync(uriInfo, securityContext, team, csv, dryRun, false);
   }
 
   public void validateEmailAlreadyExists(String email) {
@@ -1848,8 +1928,7 @@ public class UserResource extends EntityResource<User, UserRepository> {
           repository.getByName(
               uriInfo, user.getFullyQualifiedName(), repository.getFieldsWithUserAuth("*"));
     } catch (EntityNotFoundException exc) {
-      LOG.debug(
-          String.format("User not found when adding auth mechanism for: [%s]", user.getName()));
+      LOG.debug("User not found when adding auth mechanism for: [{}]", user.getName());
       original = null;
     }
     return original;

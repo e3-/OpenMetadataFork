@@ -27,12 +27,9 @@ import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 import jakarta.ws.rs.core.SecurityContext;
 import jakarta.ws.rs.core.UriInfo;
-import java.beans.IntrospectionException;
 import java.io.IOException;
-import java.lang.reflect.InvocationTargetException;
 import java.util.List;
 import java.util.UUID;
-import lombok.NonNull;
 import lombok.extern.slf4j.Slf4j;
 import org.openmetadata.schema.EntityInterface;
 import org.openmetadata.schema.api.tests.CreateTestCaseResolutionStatus;
@@ -72,7 +69,7 @@ import org.openmetadata.service.util.RestUtil;
 public class TestCaseResolutionStatusResource
     extends EntityTimeSeriesResource<TestCaseResolutionStatus, TestCaseResolutionStatusRepository> {
   public static final String COLLECTION_PATH = "/v1/dataQuality/testCases/testCaseIncidentStatus";
-  private TestCaseResolutionStatusMapper mapper = new TestCaseResolutionStatusMapper();
+  private final TestCaseResolutionStatusMapper mapper = new TestCaseResolutionStatusMapper();
 
   public TestCaseResolutionStatusResource(Authorizer authorizer) {
     super(Entity.TEST_CASE_RESOLUTION_STATUS, authorizer);
@@ -120,13 +117,11 @@ public class TestCaseResolutionStatusResource
       @Parameter(
               description = "Filter test case statuses after the given start timestamp",
               schema = @Schema(type = "number"))
-          @NonNull
           @QueryParam("startTs")
           Long startTs,
       @Parameter(
               description = "Filter test case statuses before the given end timestamp",
               schema = @Schema(type = "number"))
-          @NonNull
           @QueryParam("endTs")
           Long endTs,
       @Parameter(
@@ -318,8 +313,7 @@ public class TestCaseResolutionStatusResource
                       examples = {
                         @ExampleObject("[{op:remove, path:/a},{op:add, path: /b, value: val}]")
                       }))
-          JsonPatch patch)
-      throws IntrospectionException, InvocationTargetException, IllegalAccessException {
+          JsonPatch patch) {
 
     TestCaseResolutionStatus testCaseResolutionStatus = repository.getById(id);
     TestCase testCase =
@@ -382,13 +376,11 @@ public class TestCaseResolutionStatusResource
       @Parameter(
               description = "Filter test case statuses after the given start timestamp",
               schema = @Schema(type = "number"))
-          @NonNull
           @QueryParam("startTs")
           Long startTs,
       @Parameter(
               description = "Filter test case statuses before the given end timestamp",
               schema = @Schema(type = "number"))
-          @NonNull
           @QueryParam("endTs")
           Long endTs,
       @Parameter(
@@ -435,7 +427,17 @@ public class TestCaseResolutionStatusResource
                       allowableValues = {"asc", "desc"}))
           @QueryParam("sortType")
           @DefaultValue("desc")
-          String sortType)
+          String sortType,
+      @Parameter(
+              description =
+                  "Field to filter incidents by date range. Use 'timestamp' for created at or 'updatedAt' for last updated at.",
+              schema =
+                  @Schema(
+                      type = "string",
+                      allowableValues = {"timestamp", "updatedAt"}))
+          @QueryParam("dateField")
+          @DefaultValue("timestamp")
+          String dateField)
       throws IOException {
 
     // Use updatedAt as default sort field for TestCaseResolutionStatus since it doesn't have a name
@@ -449,8 +451,13 @@ public class TestCaseResolutionStatusResource
     searchListFilter.addQueryParam("testCaseFqn", testCaseFQN);
     searchListFilter.addQueryParam("originEntityFQN", originEntityFQN);
     searchListFilter.addQueryParam("domains", domain);
-    searchListFilter.addQueryParam("startTimestamp", String.valueOf(startTs));
-    searchListFilter.addQueryParam("endTimestamp", String.valueOf(endTs));
+    searchListFilter.addQueryParam("dateField", dateField);
+    if (startTs != null) {
+      searchListFilter.addQueryParam("startTimestamp", String.valueOf(startTs));
+    }
+    if (endTs != null) {
+      searchListFilter.addQueryParam("endTimestamp", String.valueOf(endTs));
+    }
 
     ResourceContextInterface testCaseResourceContext = TestCaseResourceContext.builder().build();
     ResourceContextInterface entityResourceContext =
@@ -474,7 +481,11 @@ public class TestCaseResolutionStatusResource
           searchListFilter,
           "testCase.fullyQualifiedName.keyword", // Group by test case to get latest status per test
           // case
-          null);
+          null,
+          limit,
+          offset,
+          defaultSortField,
+          sortType);
     } else {
       return repository.listFromSearchWithOffset(
           new Fields(null), searchListFilter, limit, offset, searchSortFilter, null, null);

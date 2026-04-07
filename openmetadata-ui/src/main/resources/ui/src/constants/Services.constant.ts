@@ -22,6 +22,7 @@ import athena from '../assets/img/service-icon-athena.png';
 import atlas from '../assets/img/service-icon-atlas.svg';
 import azuresql from '../assets/img/service-icon-azuresql.png';
 import bigtable from '../assets/img/service-icon-bigtable.png';
+import burstiq from '../assets/img/service-icon-burstiq.png';
 import cassandra from '../assets/img/service-icon-cassandra.png';
 import clickhouse from '../assets/img/service-icon-clickhouse.png';
 import cockroach from '../assets/img/service-icon-cockroach.png';
@@ -44,7 +45,6 @@ import grafana from '../assets/img/service-icon-grafana.png';
 import greenplum from '../assets/img/service-icon-greenplum.png';
 import hive from '../assets/img/service-icon-hive.png';
 import ibmdb2 from '../assets/img/service-icon-ibmdb2.png';
-import iceberge from '../assets/img/service-icon-iceberg.png';
 import impala from '../assets/img/service-icon-impala.png';
 import kafka from '../assets/img/service-icon-kafka.png';
 import kinesis from '../assets/img/service-icon-kinesis.png';
@@ -82,6 +82,7 @@ import spark from '../assets/img/service-icon-spark.png';
 import spline from '../assets/img/service-icon-spline.png';
 import mysql from '../assets/img/service-icon-sql.png';
 import sqlite from '../assets/img/service-icon-sqlite.png';
+import starrocks from '../assets/img/service-icon-starrocks.png';
 import superset from '../assets/img/service-icon-superset.png';
 import synapse from '../assets/img/service-icon-synapse.png';
 import tableau from '../assets/img/service-icon-tableau.png';
@@ -106,6 +107,8 @@ import securitySafe from '../assets/svg/security-safe.svg';
 import googleDrive from '../assets/svg/service-icon-google-drive.svg';
 import hex from '../assets/svg/service-icon-hex.svg';
 import mlflow from '../assets/svg/service-icon-mlflow.svg';
+import pubsub from '../assets/svg/service-icon-pubsub.svg';
+import sftp from '../assets/svg/service-icon-sftp.svg';
 import teradata from '../assets/svg/teradata.svg';
 import topicDefault from '../assets/svg/topic.svg';
 import { EntityType } from '../enums/entity.enum';
@@ -148,6 +151,7 @@ export const GLUE = glue;
 export const MARIADB = mariadb;
 export const VERTICA = vertica;
 export const KAFKA = kafka;
+export const PUBSUB = pubsub;
 export const REDPANDA = redpanda;
 export const SUPERSET = superset;
 export const SYNAPSE = synapse;
@@ -162,6 +166,7 @@ export const DATABRICK = databrick;
 export const UNITYCATALOG = unitycatalog;
 export const IBMDB2 = ibmdb2;
 export const DORIS = doris;
+export const STARROCKS = starrocks;
 export const DRUID = druid;
 export const DYNAMODB = dynamodb;
 export const SIGMA = sigma;
@@ -215,7 +220,6 @@ export const GREENPLUM = greenplum;
 export const ELASTIC_SEARCH = elasticSearch;
 export const OPEN_SEARCH = openSearch;
 export const CUSTOM_SEARCH_DEFAULT = searchDefault;
-export const ICEBERGE = iceberge;
 export const TERADATA = teradata;
 export const FLINK = flink;
 export const REST_SERVICE = restService;
@@ -223,7 +227,9 @@ export const COCKROACH = cockroach;
 export const SECURITY_DEFAULT = securitySafe;
 export const GRAFANA = grafana;
 export const GOOGLE_DRIVE = googleDrive;
+export const SFTP = sftp;
 export const TIMESCALE = timescale;
+export const BURSTIQ = burstiq;
 export const excludedService = [
   MlModelServiceType.Sklearn,
   MetadataServiceType.MetadataES,
@@ -387,8 +393,10 @@ export const STEPS_FOR_EDIT_SERVICE: Array<StepperStepType> = [
 export const SERVICE_DEFAULT_ERROR_MAP = {
   serviceType: false,
 };
-// 2 minutes
-export const FETCHING_EXPIRY_TIME = 2 * 60 * 1000;
+// 3 minutes timeout to wait for test connection status
+// Increasing it temporarily while we investigate test connection delays
+// @pmbrull
+export const FETCHING_EXPIRY_TIME = 3 * 60 * 1000;
 export const FETCH_INTERVAL = 2000;
 export const WORKFLOW_COMPLETE_STATUS = [
   WorkflowStatus.Failed,
@@ -447,7 +455,16 @@ export const BETA_SERVICES = [
   DashboardServiceType.Hex,
   DatabaseServiceType.ServiceNow,
   DatabaseServiceType.Timescale,
+  DatabaseServiceType.Dremio,
   MetadataServiceType.Collibra,
+  PipelineServiceType.Mulesoft,
+  DatabaseServiceType.MicrosoftFabric,
+  PipelineServiceType.MicrosoftFabricPipeline,
+  DatabaseServiceType.BurstIQ,
+  DatabaseServiceType.StarRocks,
+  DriveServiceType.SFTP,
+  DatabaseServiceType.Informix,
+  DatabaseServiceType.MicrosoftAccess,
 ];
 
 export const TEST_CONNECTION_INITIAL_MESSAGE =
@@ -479,11 +496,18 @@ export const ADVANCED_PROPERTIES = [
   'sampleDataCount',
   'threadCount',
   'timeoutSeconds',
+  'metrics',
   'sslConfig',
   'sslMode',
   'schemaRegistrySSL',
   'consumerConfigSSL',
   'verify',
+  'useNonce',
+  'disablePkce',
+  'maxClockSkew',
+  'tokenValidity',
+  'maxAge',
+  'sessionExpiry',
 ];
 
 export const PIPELINE_SERVICE_PLATFORM = 'Airflow';
@@ -538,4 +562,6 @@ export const SERVICE_TYPE_WITH_DISPLAY_NAME = new Map<string, string>([
   [PipelineServiceType.OpenLineage, 'Open Lineage'],
   [MetadataServiceType.AlationSink, 'Alation Sink'],
   [SearchServiceType.ElasticSearch, 'Elasticsearch'],
+  [DatabaseServiceType.MicrosoftFabric, 'Microsoft Fabric'],
+  [PipelineServiceType.MicrosoftFabricPipeline, 'Microsoft Fabric Pipeline'],
 ]);

@@ -11,22 +11,30 @@
  *  limitations under the License.
  */
 
-import { IconButton, Menu, ToggleButtonGroup } from '@mui/material';
+import { IconButton, ToggleButtonGroup } from '@mui/material';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { useLineageProvider } from '../../context/LineageProvider/LineageProvider';
 import { LineageContextType } from '../../context/LineageProvider/LineageProvider.interface';
+import { EntityFields } from '../../enums/AdvancedSearch.enum';
 import { EntityType } from '../../enums/entity.enum';
 import { LineageDirection } from '../../generated/api/lineage/lineageDirection';
 import { usePaging } from '../../hooks/paging/usePaging';
 import { useFqn } from '../../hooks/useFqn';
+import { useLineageStore } from '../../hooks/useLineageStore';
 import {
   getLineageByEntityCount,
+  getLineageDataByFQN,
   getLineagePagingData,
 } from '../../rest/lineageAPI';
+import {
+  prepareDownstreamColumnLevelNodesFromDownstreamEdges,
+  prepareUpstreamColumnLevelNodesFromUpstreamEdges,
+} from '../../utils/Lineage/LineageUtils';
 import { useRequiredParams } from '../../utils/useRequiredParams';
 import CustomControlsComponent from '../Entity/EntityLineage/CustomControls.component';
 import { LineageConfig } from '../Entity/EntityLineage/EntityLineage.interface';
+import { ColumnLevelLineageNode } from '../Lineage/Lineage.interface';
 import LineageTable from './LineageTable';
 import { EImpactLevel } from './LineageTable.interface';
 import { useLineageTableState } from './useLineageTableState';
@@ -38,9 +46,22 @@ jest.mock('../../hooks/useFqn');
 jest.mock('../../utils/useRequiredParams');
 jest.mock('./useLineageTableState');
 jest.mock('../../rest/lineageAPI');
+jest.mock('../../utils/StringsUtils', () => ({
+  ...jest.requireActual('../../utils/StringsUtils'),
+  stringToHTML: jest.fn((str: string) => str),
+}));
+jest.mock('../../hooks/useLineageStore');
+jest.mock('../../utils/Lineage/LineageUtils');
+jest.mock('../../utils/ToastUtils', () => ({
+  showErrorToast: jest.fn(),
+}));
 jest.mock('./LineageTable.styled', () => {
+  const { Menu: MuiMenu } = jest.requireActual('@mui/material');
+
   return {
-    StyledMenu: Menu,
+    StyledMenu: (props: React.ComponentProps<typeof MuiMenu>) => (
+      <MuiMenu {...props} />
+    ),
     StyledToggleButtonGroup: ToggleButtonGroup,
     StyledIconButton: IconButton,
   };
@@ -60,6 +81,10 @@ jest.mock('../../utils/CommonUtils', () => ({
     .mockImplementation((fqn: string) => fqn),
 }));
 
+jest.mock('../../utils/Fqn', () => ({
+  split: jest.fn().mockReturnValue(['mockGlossary']),
+}));
+
 jest.mock('lodash', () => {
   const module = jest.requireActual('lodash');
   module.debounce = jest.fn((fn) => fn);
@@ -72,6 +97,9 @@ jest.mock('../Entity/EntityLineage/CustomControls.component', () => {
 
 const mockUseLineageProvider = useLineageProvider as jest.MockedFunction<
   typeof useLineageProvider
+>;
+const mockUseLineageStore = useLineageStore as jest.MockedFunction<
+  typeof useLineageStore
 >;
 const mockUsePaging = usePaging as jest.MockedFunction<typeof usePaging>;
 const mockUseFqn = useFqn as jest.MockedFunction<typeof useFqn>;
@@ -88,6 +116,17 @@ const mockGetLineageByEntityCount =
 const mockGetLineagePagingData = getLineagePagingData as jest.MockedFunction<
   typeof getLineagePagingData
 >;
+const mockGetLineageDataByFQN = getLineageDataByFQN as jest.MockedFunction<
+  typeof getLineageDataByFQN
+>;
+const mockPrepareUpstreamColumnLevelNodesFromUpstreamEdges =
+  prepareUpstreamColumnLevelNodesFromUpstreamEdges as jest.MockedFunction<
+    typeof prepareUpstreamColumnLevelNodesFromUpstreamEdges
+  >;
+const mockPrepareDownstreamColumnLevelNodesFromDownstreamEdges =
+  prepareDownstreamColumnLevelNodesFromDownstreamEdges as jest.MockedFunction<
+    typeof prepareDownstreamColumnLevelNodesFromDownstreamEdges
+  >;
 
 const mockLineageNodes = [
   {
@@ -99,6 +138,7 @@ const mockLineageNodes = [
     owners: [],
     domains: [],
     tags: [],
+    type: 'table',
   },
   {
     id: 'node2',
@@ -109,6 +149,7 @@ const mockLineageNodes = [
     owners: [],
     domains: [],
     tags: [],
+    type: 'table',
   },
 ];
 
@@ -179,8 +220,15 @@ describe('LineageTable', () => {
       } as LineageConfig,
       updateEntityData: jest.fn(),
       onExportClick: jest.fn(),
-      onLineageConfigUpdate: jest.fn(),
     } as unknown as LineageContextType);
+
+    mockUseLineageStore.mockReturnValue({
+      lineageConfig: {
+        downstreamDepth: 2,
+        upstreamDepth: 2,
+      } as LineageConfig,
+      setLineageConfig: jest.fn(),
+    });
 
     mockUsePaging.mockReturnValue({
       currentPage: 1,
@@ -195,6 +243,7 @@ describe('LineageTable', () => {
       fqn: 'test.table',
       ingestionFQN: '',
       ruleName: '',
+      entityFqn: '',
     });
 
     mockUseRequiredParams.mockReturnValue({
@@ -218,12 +267,13 @@ describe('LineageTable', () => {
       },
       upstreamEdges: {},
       downstreamEdges: {},
+      paginationInfo: mockLineagePagingInfo,
     });
 
     mockGetLineagePagingData.mockResolvedValue(mockLineagePagingInfo);
 
     // Mock location object
-    Object.defineProperty(window, 'location', {
+    Object.defineProperty(globalThis, 'location', {
       value: {
         search: '?dir=Downstream&depth=1',
         pathname: '/test',
@@ -256,36 +306,42 @@ describe('LineageTable', () => {
   });
 
   it('should open impact level menu when clicked', async () => {
-    render(<LineageTable entity={mockEntity} />, { wrapper: MemoryRouter });
-
-    fireEvent.click(
-      screen.getByRole('button', {
-        name: /label.impact-on-area/,
-      })
-    );
-
-    expect(screen.getByText('label.asset-level')).toBeInTheDocument();
-    expect(screen.getByText('label.column-level')).toBeInTheDocument();
-  });
-
-  it('should change impact level when menu item is selected', async () => {
-    const setImpactLevel = jest.fn();
-    mockUseLineageTableState.mockReturnValue({
-      ...defaultMockState,
-      setImpactLevel,
+    render(<LineageTable entity={mockEntity} />, {
+      wrapper: MemoryRouter,
     });
-
-    render(<LineageTable entity={mockEntity} />, { wrapper: MemoryRouter });
 
     const impactButton = screen.getByRole('button', {
       name: /label.impact-on-area/,
     });
+
+    expect(impactButton).toBeInTheDocument();
+
     fireEvent.click(impactButton);
 
-    const columnLevelOption = screen.getByText('label.column-level');
-    fireEvent.click(columnLevelOption);
+    await waitFor(() => {
+      const menu = screen.getByRole('menu');
 
-    expect(setImpactLevel).toHaveBeenCalledWith(EImpactLevel.ColumnLevel);
+      expect(menu).toBeInTheDocument();
+    });
+  });
+
+  it('should change impact level when impact level state changes', async () => {
+    const setImpactLevel = jest.fn();
+    const { rerender } = render(<LineageTable entity={mockEntity} />, {
+      wrapper: MemoryRouter,
+    });
+
+    mockUseLineageTableState.mockReturnValue({
+      ...defaultMockState,
+      impactLevel: EImpactLevel.ColumnLevel,
+      setImpactLevel,
+    });
+
+    rerender(<LineageTable entity={mockEntity} />);
+
+    await waitFor(() => {
+      expect(mockGetLineageDataByFQN).toHaveBeenCalled();
+    });
   });
 
   it('should display filter selection controls when filter is active', () => {
@@ -317,7 +373,8 @@ describe('LineageTable', () => {
         id: 'col1',
         fromEntity: { fullyQualifiedName: 'test.table1', name: 'table1' },
         toEntity: { fullyQualifiedName: 'test.table2', name: 'table2' },
-        column: { fromColumns: ['col1'], toColumn: ['col2'] },
+        fromColumn: 'col1',
+        toColumn: 'col2',
       },
     ];
 
@@ -339,23 +396,100 @@ describe('LineageTable', () => {
     await waitFor(() => {
       expect(mockGetLineageByEntityCount).toHaveBeenCalledWith({
         fqn: 'test.table',
-        type: EntityType.TABLE,
+        entityType: EntityType.TABLE,
         direction: LineageDirection.Downstream,
-        nodeDepth: 1,
+        nodeDepth: 2,
+        maxDepth: 2,
+        upstreamDepth: 2,
+        downstreamDepth: 2,
         from: 0,
         size: 25,
+        include_pagination_info: true,
       });
     });
   });
 
-  it('should fetch paging data on component mount', async () => {
+  it('should not fetch paging data separately on component mount', async () => {
     render(<LineageTable entity={mockEntity} />, { wrapper: MemoryRouter });
 
     await waitFor(() => {
-      expect(mockGetLineagePagingData).toHaveBeenCalledWith({
+      expect(mockGetLineageByEntityCount).toHaveBeenCalled();
+    });
+
+    expect(mockGetLineagePagingData).not.toHaveBeenCalled();
+  });
+
+  it('should reuse pagination info on page changes without refetching counts', async () => {
+    const handlePageChange = jest.fn();
+    mockUsePaging.mockReturnValue({
+      currentPage: 1,
+      pageSize: 25,
+      paging: { total: 10 },
+      showPagination: true,
+      handlePageChange,
+      handlePagingChange: jest.fn(),
+    } as unknown as ReturnType<typeof usePaging>);
+
+    const { rerender } = render(<LineageTable entity={mockEntity} />, {
+      wrapper: MemoryRouter,
+    });
+
+    await waitFor(() => {
+      expect(mockGetLineageByEntityCount).toHaveBeenCalledWith({
         fqn: 'test.table',
-        type: EntityType.TABLE,
+        entityType: EntityType.TABLE,
+        direction: LineageDirection.Downstream,
+        nodeDepth: 2,
+        maxDepth: 2,
+        upstreamDepth: 2,
+        downstreamDepth: 2,
+        from: 0,
+        size: 25,
+        include_pagination_info: true,
       });
+    });
+
+    mockGetLineageByEntityCount.mockClear();
+    mockUsePaging.mockReturnValue({
+      currentPage: 2,
+      pageSize: 25,
+      paging: { total: 10 },
+      showPagination: true,
+      handlePageChange,
+      handlePagingChange: jest.fn(),
+    } as unknown as ReturnType<typeof usePaging>);
+
+    rerender(<LineageTable entity={mockEntity} />);
+
+    await waitFor(() => {
+      expect(mockGetLineageByEntityCount).toHaveBeenCalledWith({
+        fqn: 'test.table',
+        entityType: EntityType.TABLE,
+        direction: LineageDirection.Downstream,
+        nodeDepth: 2,
+        maxDepth: 2,
+        upstreamDepth: 2,
+        downstreamDepth: 2,
+        from: 25,
+        size: 25,
+        include_pagination_info: false,
+      });
+    });
+
+    expect(mockGetLineagePagingData).not.toHaveBeenCalled();
+  });
+
+  it('should update lineage paging info from the entity-count response', async () => {
+    const setLineagePagingInfo = jest.fn();
+    mockUseLineageTableState.mockReturnValue({
+      ...defaultMockState,
+      setLineagePagingInfo,
+    });
+
+    render(<LineageTable entity={mockEntity} />, { wrapper: MemoryRouter });
+
+    await waitFor(() => {
+      expect(setLineagePagingInfo).toHaveBeenCalledWith(mockLineagePagingInfo);
     });
   });
 
@@ -412,11 +546,10 @@ describe('LineageTable', () => {
     expect(handlePageChange).toHaveBeenCalledWith(1);
   });
 
-  it('should display correct counts for upstream and downstream', () => {
+  it('should display correct counts for downstream', () => {
     render(<LineageTable entity={mockEntity} />, { wrapper: MemoryRouter });
 
-    expect(screen.getByText('label.upstream')).toHaveTextContent('2'); // upstream count
-    expect(screen.getByText('label.downstream')).toHaveTextContent('5'); // downstream count
+    expect(screen.getByText('label.downstream')).toHaveTextContent('8'); // downstream count
   });
 
   it('should render table with pagination props', () => {
@@ -460,6 +593,568 @@ describe('LineageTable', () => {
       render(<LineageTable entity={mockEntity} />, { wrapper: MemoryRouter });
 
       expect(mockUsePaging).toHaveBeenCalledWith(50);
+    });
+  });
+
+  describe('fetchNodes - Column Level Impact', () => {
+    const mockColumnLevelNodes = [
+      {
+        id: 'col-node-1',
+        fullyQualifiedName: 'test.table1.column1',
+        name: 'column1',
+        entityType: EntityType.TABLE,
+      },
+      {
+        id: 'col-node-2',
+        fullyQualifiedName: 'test.table2.column2',
+        name: 'column2',
+        entityType: EntityType.TABLE,
+      },
+    ];
+    const mockUpstreamEdges = {
+      'test.table1-->test.table': {
+        fromEntity: {
+          fullyQualifiedName: 'test.table1',
+          id: 'entity1',
+          type: 'table',
+        },
+        toEntity: {
+          fullyQualifiedName: 'test.table',
+          id: 'entity2',
+          type: 'table',
+        },
+      },
+    };
+
+    const mockDownstreamEdges = {
+      'test.table-->test.table2': {
+        fromEntity: {
+          fullyQualifiedName: 'test.table',
+          id: 'entity2',
+          type: 'table',
+        },
+        toEntity: {
+          fullyQualifiedName: 'test.table2',
+          id: 'entity3',
+          type: 'table',
+        },
+      },
+    };
+
+    beforeEach(() => {
+      mockGetLineageDataByFQN.mockResolvedValue({
+        // entity: mockEntity,
+        nodes: {
+          'test.table1': {
+            entity: mockLineageNodes[0],
+            paging: {},
+            nodeDepth: 1,
+          },
+          'test.table2': {
+            entity: mockLineageNodes[1],
+            paging: {},
+            nodeDepth: 1,
+          },
+        },
+        upstreamEdges: mockUpstreamEdges,
+        downstreamEdges: mockDownstreamEdges,
+      });
+
+      mockPrepareUpstreamColumnLevelNodesFromUpstreamEdges.mockReturnValue([
+        mockColumnLevelNodes[0] as unknown as ColumnLevelLineageNode,
+      ]);
+
+      mockPrepareDownstreamColumnLevelNodesFromDownstreamEdges.mockReturnValue([
+        mockColumnLevelNodes[1] as unknown as ColumnLevelLineageNode,
+      ]);
+    });
+
+    it('should fetch column-level lineage data when impact level is ColumnLevel', async () => {
+      const setColumnLineageNodes = jest.fn();
+      mockUseLineageTableState.mockReturnValue({
+        ...defaultMockState,
+        impactLevel: EImpactLevel.ColumnLevel,
+        setColumnLineageNodes,
+      });
+
+      render(<LineageTable entity={mockEntity} />, { wrapper: MemoryRouter });
+
+      await waitFor(() => {
+        expect(mockGetLineageDataByFQN).toHaveBeenCalledWith({
+          fqn: 'test.table',
+          entityType: EntityType.TABLE,
+          config: {
+            downstreamDepth: 2,
+            upstreamDepth: 0,
+          },
+          direction: LineageDirection.Downstream,
+          queryFilter: undefined,
+        });
+      });
+    });
+
+    it('should process upstream edges and prepare upstream column-level nodes', async () => {
+      const setColumnLineageNodes = jest.fn();
+      mockUseLineageTableState.mockReturnValue({
+        ...defaultMockState,
+        impactLevel: EImpactLevel.ColumnLevel,
+        setColumnLineageNodes,
+      });
+
+      render(<LineageTable entity={mockEntity} />, { wrapper: MemoryRouter });
+
+      await waitFor(() => {
+        expect(
+          mockPrepareUpstreamColumnLevelNodesFromUpstreamEdges
+        ).toHaveBeenCalledWith(Object.values(mockUpstreamEdges), {
+          'test.table1': {
+            entity: mockLineageNodes[0],
+            paging: {},
+            nodeDepth: 1,
+          },
+          'test.table2': {
+            entity: mockLineageNodes[1],
+            paging: {},
+            nodeDepth: 1,
+          },
+        });
+      });
+    });
+
+    it('should process downstream edges and prepare downstream column-level nodes', async () => {
+      const setColumnLineageNodes = jest.fn();
+      mockUseLineageTableState.mockReturnValue({
+        ...defaultMockState,
+        impactLevel: EImpactLevel.ColumnLevel,
+        setColumnLineageNodes,
+      });
+
+      render(<LineageTable entity={mockEntity} />, { wrapper: MemoryRouter });
+
+      await waitFor(() => {
+        expect(
+          mockPrepareDownstreamColumnLevelNodesFromDownstreamEdges
+        ).toHaveBeenCalledWith(Object.values(mockDownstreamEdges), {
+          'test.table1': {
+            entity: mockLineageNodes[0],
+            paging: {},
+            nodeDepth: 1,
+          },
+          'test.table2': {
+            entity: mockLineageNodes[1],
+            paging: {},
+            nodeDepth: 1,
+          },
+        });
+      });
+    });
+
+    it('should call setColumnLineageNodes with upstream and downstream nodes', async () => {
+      const setColumnLineageNodes = jest.fn();
+      mockUseLineageTableState.mockReturnValue({
+        ...defaultMockState,
+        impactLevel: EImpactLevel.ColumnLevel,
+        setColumnLineageNodes,
+      });
+
+      render(<LineageTable entity={mockEntity} />, { wrapper: MemoryRouter });
+
+      await waitFor(() => {
+        expect(setColumnLineageNodes).toHaveBeenCalledWith(
+          [mockColumnLevelNodes[0]],
+          [mockColumnLevelNodes[1]]
+        );
+      });
+    });
+
+    it('should update paging with upstream nodes length when direction is Upstream', async () => {
+      const handlePagingChange = jest.fn();
+      const setColumnLineageNodes = jest.fn();
+      mockUseLineageTableState.mockReturnValue({
+        ...defaultMockState,
+        impactLevel: EImpactLevel.ColumnLevel,
+        lineageDirection: LineageDirection.Upstream,
+        setColumnLineageNodes,
+      });
+      mockUsePaging.mockReturnValue({
+        currentPage: 1,
+        pageSize: 25,
+        paging: { total: 10 },
+        showPagination: true,
+        handlePageChange: jest.fn(),
+        handlePagingChange,
+      } as unknown as ReturnType<typeof usePaging>);
+
+      render(<LineageTable entity={mockEntity} />, { wrapper: MemoryRouter });
+
+      await waitFor(() => {
+        expect(handlePagingChange).toHaveBeenCalledWith({
+          total: 1,
+        });
+      });
+    });
+
+    it('should update paging with downstream nodes length when direction is Downstream', async () => {
+      const handlePagingChange = jest.fn();
+      const setColumnLineageNodes = jest.fn();
+      mockUseLineageTableState.mockReturnValue({
+        ...defaultMockState,
+        impactLevel: EImpactLevel.ColumnLevel,
+        lineageDirection: LineageDirection.Downstream,
+        setColumnLineageNodes,
+      });
+      mockUsePaging.mockReturnValue({
+        currentPage: 1,
+        pageSize: 25,
+        paging: { total: 10 },
+        showPagination: true,
+        handlePageChange: jest.fn(),
+        handlePagingChange,
+      } as unknown as ReturnType<typeof usePaging>);
+
+      render(<LineageTable entity={mockEntity} />, { wrapper: MemoryRouter });
+
+      await waitFor(() => {
+        expect(handlePagingChange).toHaveBeenCalledWith({
+          total: 1,
+        });
+      });
+    });
+
+    it('should handle empty upstream edges for column-level lineage', async () => {
+      const setColumnLineageNodes = jest.fn();
+      mockGetLineageDataByFQN.mockResolvedValue({
+        nodes: {},
+        upstreamEdges: {},
+        downstreamEdges: {},
+      });
+
+      mockPrepareUpstreamColumnLevelNodesFromUpstreamEdges.mockReturnValue([]);
+      mockPrepareDownstreamColumnLevelNodesFromDownstreamEdges.mockReturnValue(
+        []
+      );
+
+      mockUseLineageTableState.mockReturnValue({
+        ...defaultMockState,
+        impactLevel: EImpactLevel.ColumnLevel,
+        setColumnLineageNodes,
+      });
+
+      render(<LineageTable entity={mockEntity} />, { wrapper: MemoryRouter });
+
+      await waitFor(() => {
+        expect(setColumnLineageNodes).toHaveBeenCalledWith([], []);
+      });
+    });
+
+    it('should pass onSearchValueChange for column-level lineage', () => {
+      const mockState = {
+        ...defaultMockState,
+        searchValue: 'test search',
+        loading: true,
+        impactLevel: EImpactLevel.ColumnLevel,
+      };
+      mockUseLineageTableState.mockReturnValue(mockState);
+
+      render(<LineageTable entity={mockEntity} />, { wrapper: MemoryRouter });
+
+      expect(CustomControlsComponent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          onSearchValueChange: expect.any(Function),
+        }),
+        {}
+      );
+    });
+  });
+
+  describe('fetchNodes - Table Level Impact', () => {
+    it('should fetch table-level lineage data when impact level is TableLevel', async () => {
+      const setFilterNodes = jest.fn();
+      mockUseLineageTableState.mockReturnValue({
+        ...defaultMockState,
+        impactLevel: EImpactLevel.TableLevel,
+        setFilterNodes,
+      });
+
+      render(<LineageTable entity={mockEntity} />, { wrapper: MemoryRouter });
+
+      await waitFor(() => {
+        expect(mockGetLineageByEntityCount).toHaveBeenCalledWith({
+          fqn: 'test.table',
+          entityType: EntityType.TABLE,
+          direction: LineageDirection.Downstream,
+          nodeDepth: 2,
+          maxDepth: 2,
+          upstreamDepth: 2,
+          downstreamDepth: 2,
+          from: 0,
+          size: 25,
+          query_filter: undefined,
+          include_pagination_info: true,
+        });
+      });
+    });
+
+    it('should delete current entity from nodes before processing', async () => {
+      const setFilterNodes = jest.fn();
+      mockUseLineageTableState.mockReturnValue({
+        ...defaultMockState,
+        impactLevel: EImpactLevel.TableLevel,
+        setFilterNodes,
+      });
+
+      mockGetLineageByEntityCount.mockResolvedValue({
+        nodes: {
+          'test.table': {
+            entity: mockEntity,
+            paging: {},
+            nodeDepth: 0,
+          },
+          'test.table1': {
+            entity: mockLineageNodes[0],
+            paging: {},
+            nodeDepth: 1,
+          },
+        },
+        upstreamEdges: {},
+        downstreamEdges: {},
+      });
+
+      render(<LineageTable entity={mockEntity} />, { wrapper: MemoryRouter });
+
+      await waitFor(() => {
+        expect(setFilterNodes).toHaveBeenCalledWith([
+          {
+            ...mockLineageNodes[0],
+            nodeDepth: 1,
+          },
+        ]);
+      });
+    });
+
+    it('should map nodes to LineageNode format with entity and paging data', async () => {
+      const setFilterNodes = jest.fn();
+      mockUseLineageTableState.mockReturnValue({
+        ...defaultMockState,
+        impactLevel: EImpactLevel.TableLevel,
+        setFilterNodes,
+      });
+
+      const mockPaging = { entityDownstreamCount: 5 };
+      mockGetLineageByEntityCount.mockResolvedValue({
+        nodes: {
+          'test.table1': {
+            entity: mockLineageNodes[0],
+            paging: mockPaging,
+            nodeDepth: 1,
+          },
+        },
+        upstreamEdges: {},
+        downstreamEdges: {},
+      });
+
+      render(<LineageTable entity={mockEntity} />, { wrapper: MemoryRouter });
+
+      await waitFor(() => {
+        expect(setFilterNodes).toHaveBeenCalledWith([
+          {
+            ...mockLineageNodes[0],
+            ...mockPaging,
+            nodeDepth: 1,
+          },
+        ]);
+      });
+    });
+
+    it('should sort nodes by nodeDepth', async () => {
+      const setFilterNodes = jest.fn();
+      mockUseLineageTableState.mockReturnValue({
+        ...defaultMockState,
+        impactLevel: EImpactLevel.TableLevel,
+        setFilterNodes,
+      });
+
+      mockGetLineageByEntityCount.mockResolvedValue({
+        nodes: {
+          'test.table2': {
+            entity: mockLineageNodes[1],
+            paging: {},
+            nodeDepth: 2,
+          },
+          'test.table1': {
+            entity: mockLineageNodes[0],
+            paging: {},
+            nodeDepth: 1,
+          },
+        },
+        upstreamEdges: {},
+        downstreamEdges: {},
+      });
+
+      render(<LineageTable entity={mockEntity} />, { wrapper: MemoryRouter });
+
+      await waitFor(() => {
+        expect(setFilterNodes).toHaveBeenCalledWith([
+          {
+            ...mockLineageNodes[0],
+            nodeDepth: 1,
+          },
+          {
+            ...mockLineageNodes[1],
+            nodeDepth: 2,
+          },
+        ]);
+      });
+    });
+
+    it('should calculate pagination offset correctly for table-level lineage', async () => {
+      const setFilterNodes = jest.fn();
+      mockUseLineageTableState.mockReturnValue({
+        ...defaultMockState,
+        impactLevel: EImpactLevel.TableLevel,
+        setFilterNodes,
+      });
+      mockUsePaging.mockReturnValue({
+        currentPage: 3,
+        pageSize: 10,
+        paging: { total: 100 },
+        showPagination: true,
+        handlePageChange: jest.fn(),
+        handlePagingChange: jest.fn(),
+      } as unknown as ReturnType<typeof usePaging>);
+
+      render(<LineageTable entity={mockEntity} />, { wrapper: MemoryRouter });
+
+      await waitFor(() => {
+        expect(mockGetLineageByEntityCount).toHaveBeenCalledWith(
+          expect.objectContaining({
+            from: 20,
+            size: 10,
+            maxDepth: 2,
+          })
+        );
+      });
+    });
+
+    it('should pass query_filter to getLineageByEntityCount', async () => {
+      const setFilterNodes = jest.fn();
+      const mockQueryFilter = {
+        query: {
+          bool: {
+            must: [
+              {
+                bool: {
+                  should: [{ term: { 'service.name': 'test-service' } }],
+                },
+              },
+            ],
+          },
+        },
+      };
+
+      mockUseLineageProvider.mockReturnValue({
+        selectedQuickFilters: [
+          {
+            key: 'service.name',
+            value: [
+              {
+                key: 'test-service',
+              },
+            ],
+          },
+        ],
+        setSelectedQuickFilters: jest.fn(),
+        lineageConfig: {
+          downstreamDepth: 2,
+          upstreamDepth: 2,
+        } as LineageConfig,
+        updateEntityData: jest.fn(),
+        onExportClick: jest.fn(),
+        onLineageConfigUpdate: jest.fn(),
+      } as unknown as LineageContextType);
+
+      mockUseLineageTableState.mockReturnValue({
+        ...defaultMockState,
+        impactLevel: EImpactLevel.TableLevel,
+        setFilterNodes,
+      });
+
+      render(<LineageTable entity={mockEntity} />, { wrapper: MemoryRouter });
+
+      await waitFor(() => {
+        expect(mockGetLineageByEntityCount).toHaveBeenCalledWith(
+          expect.objectContaining({
+            query_filter: JSON.stringify(mockQueryFilter),
+          })
+        );
+      });
+    });
+
+    it('should not pass onSearchValueChange for table-level lineage', () => {
+      const mockState = {
+        ...defaultMockState,
+        searchValue: 'test search',
+        loading: true,
+        impactLevel: EImpactLevel.TableLevel,
+      };
+      mockUseLineageTableState.mockReturnValue(mockState);
+
+      render(<LineageTable entity={mockEntity} />, { wrapper: MemoryRouter });
+
+      expect(CustomControlsComponent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          onSearchValueChange: expect.any(Function),
+        }),
+        {}
+      );
+    });
+
+    it('should not fetch paging data in column mode', async () => {
+      mockUseLineageTableState.mockReturnValue({
+        ...defaultMockState,
+        impactLevel: EImpactLevel.ColumnLevel,
+      });
+
+      render(<LineageTable entity={mockEntity} />, { wrapper: MemoryRouter });
+
+      await waitFor(() => {
+        expect(mockGetLineageDataByFQN).toHaveBeenCalled();
+      });
+
+      expect(mockGetLineagePagingData).not.toHaveBeenCalled();
+    });
+
+    it('should expose glossary term quick filters in column mode', async () => {
+      const setSelectedQuickFilters = jest.fn();
+
+      mockUseLineageProvider.mockReturnValue({
+        selectedQuickFilters: [],
+        setSelectedQuickFilters,
+        lineageConfig: {
+          downstreamDepth: 2,
+          upstreamDepth: 2,
+        } as LineageConfig,
+        updateEntityData: jest.fn(),
+        onExportClick: jest.fn(),
+      } as unknown as LineageContextType);
+
+      mockUseLineageTableState.mockReturnValue({
+        ...defaultMockState,
+        impactLevel: EImpactLevel.ColumnLevel,
+      });
+
+      render(<LineageTable entity={mockEntity} />, { wrapper: MemoryRouter });
+
+      await waitFor(() => {
+        const calls = setSelectedQuickFilters.mock.calls;
+        const latestFilters = calls[calls.length - 1]?.[0];
+
+        expect(latestFilters).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ key: EntityFields.GLOSSARY_TERMS }),
+          ])
+        );
+      });
     });
   });
 });

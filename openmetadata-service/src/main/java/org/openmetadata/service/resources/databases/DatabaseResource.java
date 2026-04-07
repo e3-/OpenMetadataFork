@@ -56,6 +56,7 @@ import org.openmetadata.schema.type.DatabaseProfilerConfig;
 import org.openmetadata.schema.type.EntityHistory;
 import org.openmetadata.schema.type.Include;
 import org.openmetadata.schema.type.MetadataOperation;
+import org.openmetadata.schema.type.RegexMode;
 import org.openmetadata.schema.type.csv.CsvImportResult;
 import org.openmetadata.schema.utils.ResultList;
 import org.openmetadata.service.Entity;
@@ -76,7 +77,7 @@ import org.openmetadata.service.util.CSVExportResponse;
 @Consumes(MediaType.APPLICATION_JSON)
 @Collection(name = "databases")
 public class DatabaseResource extends EntityResource<Database, DatabaseRepository> {
-  public static final String COLLECTION_PATH = "v1/databases/";
+  public static final String COLLECTION_PATH = "/v1/databases/";
   private final DatabaseMapper mapper = new DatabaseMapper();
   static final String FIELDS =
       "owners,databaseSchemas,usageSummary,location,tags,certification,extension,domains,sourceHash,followers";
@@ -135,6 +136,15 @@ public class DatabaseResource extends EntityResource<Database, DatabaseRepositor
               schema = @Schema(type = "string", example = "snowflakeWestCoast"))
           @QueryParam("service")
           String serviceParam,
+      @Parameter(
+              description =
+                  "Filter databases by regex pattern. By default, the pattern is applied to the database name field "
+                      + "(for example, 'financeDB.*'). To filter by fullyQualifiedName instead, set 'regexFilterByFqn=true' "
+                      + "and use an FQN-style pattern (for example, 'snowflakeWestCoast.financeDB.*'). For better performance, "
+                      + "use in combination with the 'service' query filter.",
+              schema = @Schema(type = "string", example = "financeDB.*"))
+          @QueryParam("databaseRegex")
+          String databaseParamRegex,
       @Parameter(description = "Limit the number tables returned. (1 to 1000000, default = 10)")
           @DefaultValue("10")
           @QueryParam("limit")
@@ -156,8 +166,35 @@ public class DatabaseResource extends EntityResource<Database, DatabaseRepositor
               schema = @Schema(implementation = Include.class))
           @QueryParam("include")
           @DefaultValue("non-deleted")
-          Include include) {
-    ListFilter filter = new ListFilter(include).addQueryParam("service", serviceParam);
+          Include include,
+      @Parameter(
+              description =
+                  "When true, regex filters match against fullyQualifiedName instead of name. Default is false.",
+              schema = @Schema(type = "boolean", example = "false"))
+          @QueryParam("regexFilterByFqn")
+          @DefaultValue("false")
+          boolean regexFilterByFqn,
+      @Parameter(
+              description =
+                  "Controls how regex filters are applied. 'include' returns matching entities, 'exclude' returns non-matching entities. Default is 'include'.",
+              schema = @Schema(implementation = RegexMode.class))
+          @QueryParam("regexMode")
+          @DefaultValue("include")
+          RegexMode regexMode) {
+    ListFilter filter = new ListFilter(include);
+    if (serviceParam != null) {
+      filter.addQueryParam("service", serviceParam);
+    }
+    if (regexFilterByFqn) {
+      filter.addQueryParam("regexFilterByFqn", true);
+    }
+    if (regexMode != null) {
+      filter.addQueryParam("regexMode", regexMode.value());
+    }
+    if (databaseParamRegex != null) {
+      filter.addQueryParam("databaseRegex", databaseParamRegex);
+      filter.addQueryParam("databaseRegexField", "name");
+    }
     return super.listInternal(
         uriInfo, securityContext, fieldsParam, filter, limitParam, before, after);
   }
@@ -218,8 +255,17 @@ public class DatabaseResource extends EntityResource<Database, DatabaseRepositor
               schema = @Schema(implementation = Include.class))
           @QueryParam("include")
           @DefaultValue("non-deleted")
-          Include include) {
-    return getInternal(uriInfo, securityContext, id, fieldsParam, include);
+          Include include,
+      @Parameter(
+              description =
+                  "Per-relation include control. Format: field:value,field2:value2. "
+                      + "Example: owners:non-deleted,followers:all. "
+                      + "Valid values: all, deleted, non-deleted. "
+                      + "If not specified for a field, uses the entity's include value.",
+              schema = @Schema(type = "string", example = "owners:non-deleted,followers:all"))
+          @QueryParam("includeRelations")
+          String includeRelations) {
+    return getInternal(uriInfo, securityContext, id, fieldsParam, include, includeRelations);
   }
 
   @GET
@@ -256,8 +302,17 @@ public class DatabaseResource extends EntityResource<Database, DatabaseRepositor
               schema = @Schema(implementation = Include.class))
           @QueryParam("include")
           @DefaultValue("non-deleted")
-          Include include) {
-    return getByNameInternal(uriInfo, securityContext, fqn, fieldsParam, include);
+          Include include,
+      @Parameter(
+              description =
+                  "Per-relation include control. Format: field:value,field2:value2. "
+                      + "Example: owners:non-deleted,followers:all. "
+                      + "Valid values: all, deleted, non-deleted. "
+                      + "If not specified for a field, uses the entity's include value.",
+              schema = @Schema(type = "string", example = "owners:non-deleted,followers:all"))
+          @QueryParam("includeRelations")
+          String includeRelations) {
+    return getByNameInternal(uriInfo, securityContext, fqn, fieldsParam, include, includeRelations);
   }
 
   @GET
@@ -572,6 +627,7 @@ public class DatabaseResource extends EntityResource<Database, DatabaseRepositor
                     schema = @Schema(implementation = CsvImportResult.class)))
       })
   public CsvImportResult importCsv(
+      @Context UriInfo uriInfo,
       @Context SecurityContext securityContext,
       @Parameter(description = "Name of the Database", schema = @Schema(type = "string"))
           @PathParam("name")
@@ -589,7 +645,7 @@ public class DatabaseResource extends EntityResource<Database, DatabaseRepositor
           boolean recursive,
       String csv)
       throws IOException {
-    return importCsvInternal(securityContext, name, csv, dryRun, recursive);
+    return importCsvInternal(uriInfo, securityContext, name, csv, dryRun, recursive);
   }
 
   @PUT
@@ -612,6 +668,7 @@ public class DatabaseResource extends EntityResource<Database, DatabaseRepositor
                     schema = @Schema(implementation = CsvImportResult.class)))
       })
   public Response importCsvAsync(
+      @Context UriInfo uriInfo,
       @Context SecurityContext securityContext,
       @Parameter(description = "Name of the Database", schema = @Schema(type = "string"))
           @PathParam("name")
@@ -628,7 +685,7 @@ public class DatabaseResource extends EntityResource<Database, DatabaseRepositor
           @QueryParam("recursive")
           boolean recursive,
       String csv) {
-    return importCsvInternalAsync(securityContext, name, csv, dryRun, recursive);
+    return importCsvInternalAsync(uriInfo, securityContext, name, csv, dryRun, recursive);
   }
 
   @PUT

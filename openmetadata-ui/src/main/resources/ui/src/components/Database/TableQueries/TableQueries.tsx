@@ -114,8 +114,10 @@ const TableQueries: FC<TableQueriesProp> = ({
   const [isTagsLoading, setIsTagsLoading] = useState(false);
   const [isOwnerLoading, setIsOwnerLoading] = useState(false);
   const [isClickedCalendar, setIsClickedCalendar] = useState(false);
-  const [queryDateFilter, setQueryDateFilter] =
-    useState<{ startTs: number; endTs: number }>();
+  const [queryDateFilter, setQueryDateFilter] = useState<{
+    startTs: number;
+    endTs: number;
+  }>();
   const [sortQuery, setSortQuery] = useState<{
     field: string;
     order: SORT_ORDER;
@@ -488,7 +490,7 @@ const TableQueries: FC<TableQueriesProp> = ({
   const addButton = (
     <Tooltip
       placement="top"
-      title={!permissions?.query.Create && NO_PERMISSION_FOR_ACTION}>
+      title={!permissions?.query.Create && t(NO_PERMISSION_FOR_ACTION)}>
       <Button
         data-testid="add-query-btn"
         disabled={!permissions?.query.Create}

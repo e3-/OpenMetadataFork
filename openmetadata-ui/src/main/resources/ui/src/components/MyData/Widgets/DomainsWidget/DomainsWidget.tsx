@@ -22,7 +22,6 @@ import {
   INITIAL_PAGING_VALUE,
   PAGE_SIZE_BASE,
   PAGE_SIZE_MEDIUM,
-  ROUTES,
 } from '../../../../constants/constants';
 import {
   applySortToData,
@@ -36,9 +35,13 @@ import {
   WidgetCommonProps,
   WidgetConfig,
 } from '../../../../pages/CustomizablePage/CustomizablePage.interface';
+import { getAllDomainsWithAssetsCount } from '../../../../rest/domainAPI';
 import { searchQuery } from '../../../../rest/searchAPI';
 import { getDomainIcon } from '../../../../utils/DomainUtils';
-import { getDomainDetailsPath } from '../../../../utils/RouterUtils';
+import {
+  getDomainDetailsPath,
+  getDomainPath,
+} from '../../../../utils/RouterUtils';
 import ErrorPlaceHolder from '../../../common/ErrorWithPlaceholder/ErrorPlaceHolder';
 import WidgetEmptyState from '../Common/WidgetEmptyState/WidgetEmptyState';
 import WidgetFooter from '../Common/WidgetFooter/WidgetFooter';
@@ -65,6 +68,7 @@ const DomainsWidget = ({
   );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [assetsCounts, setAssetsCounts] = useState<Record<string, number>>({});
 
   const fetchDomains = useCallback(async () => {
     setLoading(true);
@@ -73,18 +77,22 @@ const DomainsWidget = ({
       const sortField = getSortField(selectedSortBy);
       const sortOrder = getSortOrder(selectedSortBy);
 
-      const res = await searchQuery({
-        query: '',
-        pageNumber: INITIAL_PAGING_VALUE,
-        pageSize: PAGE_SIZE_MEDIUM,
-        sortField,
-        sortOrder,
-        searchIndex: SearchIndex.DOMAIN,
-      });
+      const [res, counts] = await Promise.all([
+        searchQuery({
+          query: '',
+          pageNumber: INITIAL_PAGING_VALUE,
+          pageSize: PAGE_SIZE_MEDIUM,
+          sortField,
+          sortOrder,
+          searchIndex: SearchIndex.DOMAIN,
+        }),
+        getAllDomainsWithAssetsCount(),
+      ]);
 
       const domains = res?.hits?.hits.map((hit) => hit._source);
       const sortedDomains = applySortToData(domains, selectedSortBy);
       setDomains(sortedDomains as Domain[]);
+      setAssetsCounts(counts);
     } catch {
       setError(t('message.fetch-domain-list-error'));
       setDomains([]);
@@ -121,13 +129,13 @@ const DomainsWidget = ({
   }, []);
 
   const handleTitleClick = useCallback(() => {
-    navigate(ROUTES.DOMAIN);
+    navigate(getDomainPath());
   }, [navigate]);
 
   const emptyState = useMemo(
     () => (
       <WidgetEmptyState
-        actionButtonLink={ROUTES.DOMAIN}
+        actionButtonLink={getDomainPath()}
         actionButtonText={t('label.explore-domain')}
         description={t('message.domains-no-data-message')}
         icon={
@@ -169,7 +177,7 @@ const DomainsWidget = ({
                         {domain.displayName || domain.name}
                       </Typography.Text>
                       <span className="domain-card-full-count">
-                        {domain.assets?.length || 0}
+                        {assetsCounts[domain.fullyQualifiedName ?? ''] ?? 0}
                       </span>
                     </div>
                   </div>
@@ -190,7 +198,7 @@ const DomainsWidget = ({
                       </Typography.Text>
                     </span>
                     <span className="domain-card-count">
-                      {domain.assets?.length || 0}
+                      {assetsCounts[domain.fullyQualifiedName ?? ''] ?? 0}
                     </span>
                   </div>
                 </div>
@@ -211,7 +219,7 @@ const DomainsWidget = ({
   const footer = useMemo(
     () => (
       <WidgetFooter
-        moreButtonLink="/domain"
+        moreButtonLink={getDomainPath()}
         moreButtonText={t('label.view-more')}
         showMoreButton={showWidgetFooterMoreButton}
       />

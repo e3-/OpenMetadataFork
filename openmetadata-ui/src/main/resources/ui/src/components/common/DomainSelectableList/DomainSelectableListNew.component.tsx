@@ -26,6 +26,7 @@ const DomainSelectableListNew = ({
   multiple = false,
   onUpdate,
   selectedDomain,
+  isClearable,
 }: DomainSelectableListProps) => {
   const { t } = useTranslation();
   const [popupVisible, setPopupVisible] = useState(false);
@@ -65,6 +66,10 @@ const DomainSelectableListNew = ({
   const dropdownRef = useRef<BaseSelectRef>(null);
 
   useEffect(() => {
+    setIsDropdownOpen(popupVisible);
+  }, [popupVisible]);
+
+  useEffect(() => {
     const observer = new MutationObserver(() => {
       const dropdown = document.querySelector(
         '.domain-custom-dropdown-class'
@@ -99,6 +104,7 @@ const DomainSelectableListNew = ({
         destroyTooltipOnHide
         content={
           <div
+            data-react-aria-top-layer
             className="user-profile-edit-popover-card"
             style={{
               height: `${popoverHeight}px`,
@@ -116,7 +122,9 @@ const DomainSelectableListNew = ({
               dropdownRef={dropdownRef}
               handleDropdownChange={handleDropdownChange}
               initialDomains={initialDomains}
+              isClearable={isClearable}
               isMultiple={multiple}
+              open={isDropdownOpen}
               value={selectedDomainsList as string[]}
               visible={popupVisible}
               onCancel={() => setPopupVisible(false)}

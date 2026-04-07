@@ -7,60 +7,67 @@ import org.apache.calcite.sql.fun.SqlStdOperatorTable;
 import org.apache.calcite.sql.util.SqlVisitor;
 import org.openmetadata.service.exception.BadRequestException;
 
+/**
+ * Builds SPARQL queries from SQL AST nodes using the visitor pattern. Supports nested/structured
+ * fields (votes.upVotes, changeDescription.fieldsUpdated), property paths for transitive queries,
+ * and PROV-O vocabulary for lineage.
+ */
 @Slf4j
 public class SparqlBuilder implements SqlVisitor<Void> {
 
   private final SqlMappingContext mappingContext;
-  private final StringBuilder selectClause = new StringBuilder();
   private final StringBuilder whereClause = new StringBuilder();
   private final StringBuilder filterClause = new StringBuilder();
+  private final StringBuilder optionalClause = new StringBuilder();
   private final Map<String, String> tableAliases = new HashMap<>();
   private final Set<String> projectedVars = new LinkedHashSet<>();
   private final Set<String> usedVars = new HashSet<>();
+  private final Map<String, String> nestedVarMap = new HashMap<>();
 
   private String currentTable;
   private String currentAlias;
   private int varCounter = 0;
   private String orderByClause = "";
   private String limitClause = "";
+  private boolean useDistinct = false;
 
   public SparqlBuilder(SqlMappingContext mappingContext) {
     this.mappingContext = mappingContext;
   }
 
+  public SparqlBuilder withDistinct() {
+    this.useDistinct = true;
+    return this;
+  }
+
   public String build() {
     StringBuilder sparql = new StringBuilder();
-
-    // Add prefixes
-    sparql.append(mappingContext.getPrefixDeclarations());
-    sparql.append("\n");
-
-    // Build SELECT clause
+    sparql.append(mappingContext.getPrefixDeclarations()).append("\n");
     sparql.append("SELECT ");
+    if (useDistinct) {
+      sparql.append("DISTINCT ");
+    }
     if (projectedVars.isEmpty()) {
       sparql.append("*");
     } else {
       sparql.append(String.join(" ", projectedVars));
     }
-    sparql.append("\n");
-
-    // Build WHERE clause
-    sparql.append("WHERE {\n");
+    sparql.append("\nWHERE {\n");
     sparql.append(whereClause);
 
-    // Add filters if any
-    if (filterClause.length() > 0) {
+    if (!optionalClause.isEmpty()) {
+      sparql.append(optionalClause);
+    }
+
+    if (!filterClause.isEmpty()) {
       sparql.append("\n  FILTER (").append(filterClause).append(")");
     }
 
     sparql.append("\n}\n");
 
-    // Add ORDER BY if present
     if (!orderByClause.isEmpty()) {
       sparql.append(orderByClause).append("\n");
     }
-
-    // Add LIMIT if present
     if (!limitClause.isEmpty()) {
       sparql.append(limitClause).append("\n");
     }
@@ -87,50 +94,41 @@ public class SparqlBuilder implements SqlVisitor<Void> {
   }
 
   private void visitSelect(SqlSelect select) {
-    // Process FROM clause first
     if (select.getFrom() != null) {
       select.getFrom().accept(this);
     }
 
-    // Process SELECT list
     SqlNodeList selectList = select.getSelectList();
     if (selectList != null) {
       for (SqlNode node : selectList) {
-        if (node instanceof SqlIdentifier) {
-          SqlIdentifier id = (SqlIdentifier) node;
+        if (node instanceof SqlIdentifier id) {
           processProjection(id);
         }
       }
     }
 
-    // Process WHERE clause
     if (select.getWhere() != null) {
       select.getWhere().accept(this);
     }
 
-    // Process ORDER BY
     if (select.getOrderList() != null) {
       processOrderBy(select.getOrderList());
     }
 
-    // Process LIMIT
     if (select.getFetch() != null) {
       processLimit(select.getFetch());
     }
   }
 
   private void visitJoin(SqlJoin join) {
-    // Process left side
     join.getLeft().accept(this);
     String leftTable = currentTable;
     String leftAlias = currentAlias;
 
-    // Process right side
     join.getRight().accept(this);
     String rightTable = currentTable;
     String rightAlias = currentAlias;
 
-    // Process join condition
     if (join.getCondition() != null) {
       processJoinCondition(join.getCondition(), leftAlias, rightAlias);
     }
@@ -140,9 +138,7 @@ public class SparqlBuilder implements SqlVisitor<Void> {
     SqlNode left = call.operand(0);
     SqlNode right = call.operand(1);
 
-    if (left instanceof SqlIdentifier && right instanceof SqlLiteral) {
-      SqlIdentifier id = (SqlIdentifier) left;
-      SqlLiteral literal = (SqlLiteral) right;
+    if (left instanceof SqlIdentifier id && right instanceof SqlLiteral literal) {
 
       String columnName = extractColumnName(id);
       String tableAlias = extractTableAlias(id);
@@ -155,7 +151,7 @@ public class SparqlBuilder implements SqlVisitor<Void> {
 
       String var = getOrCreateVar(tableAlias);
 
-      if (filterClause.length() > 0) {
+      if (!filterClause.isEmpty()) {
         filterClause.append(" && ");
       }
       filterClause
@@ -173,17 +169,15 @@ public class SparqlBuilder implements SqlVisitor<Void> {
     SqlNode left = call.operand(0);
     SqlNode right = call.operand(1);
 
-    if (left instanceof SqlIdentifier && right instanceof SqlLiteral) {
-      SqlIdentifier id = (SqlIdentifier) left;
-      SqlLiteral literal = (SqlLiteral) right;
+    if (left instanceof SqlIdentifier id && right instanceof SqlLiteral literal) {
 
       String columnName = extractColumnName(id);
       String tableAlias = extractTableAlias(id);
-      String pattern = literal.toValue().toString().replace("%", ".*").replace("_", ".");
+      String pattern = literal.toValue().replace("%", ".*").replace("_", ".");
 
       String var = getOrCreateVar(tableAlias);
 
-      if (filterClause.length() > 0) {
+      if (!filterClause.isEmpty()) {
         filterClause.append(" && ");
       }
       filterClause
@@ -261,6 +255,17 @@ public class SparqlBuilder implements SqlVisitor<Void> {
     String tableAlias = extractTableAlias(id);
 
     SqlMappingContext.TableMapping tableMapping = getTableMapping(tableAlias);
+
+    if (columnName.contains(".")) {
+      processNestedProjection(tableAlias, columnName, tableMapping);
+      return;
+    }
+
+    if (tableMapping.hasNestedField(columnName)) {
+      processNestedProjection(tableAlias, columnName, tableMapping);
+      return;
+    }
+
     SqlMappingContext.ColumnMapping columnMapping =
         tableMapping
             .getColumnMapping(columnName)
@@ -270,8 +275,6 @@ public class SparqlBuilder implements SqlVisitor<Void> {
     String columnVar = "?" + var + "_" + columnName;
 
     projectedVars.add(columnVar);
-
-    // Add triple pattern for this column
     whereClause
         .append("  ?")
         .append(var)
@@ -282,16 +285,73 @@ public class SparqlBuilder implements SqlVisitor<Void> {
         .append(" .\n");
   }
 
+  private void processNestedProjection(
+      String tableAlias, String path, SqlMappingContext.TableMapping tableMapping) {
+    String[] parts = path.split("\\.", 2);
+    String nestedField = parts[0];
+    String subField = parts.length > 1 ? parts[1] : null;
+
+    SqlMappingContext.NestedMapping nestedMapping =
+        tableMapping
+            .getNestedMapping(nestedField)
+            .orElseThrow(() -> new BadRequestException("Unknown nested field: " + nestedField));
+
+    String var = getOrCreateVar(tableAlias);
+    String nestedVar = getOrCreateNestedVar(tableAlias, nestedField);
+
+    if (!nestedVarMap.containsKey(tableAlias + "." + nestedField)) {
+      whereClause
+          .append("  ?")
+          .append(var)
+          .append(" ")
+          .append(nestedMapping.getParentProperty())
+          .append(" ?")
+          .append(nestedVar)
+          .append(" .\n");
+      nestedVarMap.put(tableAlias + "." + nestedField, nestedVar);
+    }
+
+    if (subField != null) {
+      SqlMappingContext.ColumnMapping fieldMapping =
+          nestedMapping
+              .getField(subField)
+              .orElseThrow(
+                  () ->
+                      new BadRequestException(
+                          "Unknown nested subfield: " + nestedField + "." + subField));
+
+      String fieldVar = "?" + nestedVar + "_" + subField;
+      projectedVars.add(fieldVar);
+      whereClause
+          .append("  ?")
+          .append(nestedVar)
+          .append(" ")
+          .append(fieldMapping.getRdfProperty())
+          .append(" ")
+          .append(fieldVar)
+          .append(" .\n");
+    } else {
+      projectedVars.add("?" + nestedVar);
+    }
+  }
+
+  private String getOrCreateNestedVar(String tableAlias, String nestedField) {
+    String key = tableAlias + "." + nestedField;
+    if (nestedVarMap.containsKey(key)) {
+      return nestedVarMap.get(key);
+    }
+    String var = nestedField + (++varCounter);
+    nestedVarMap.put(key, var);
+    return var;
+  }
+
   private void processJoinCondition(SqlNode condition, String leftAlias, String rightAlias) {
-    if (condition instanceof SqlCall) {
-      SqlCall call = (SqlCall) condition;
+    if (condition instanceof SqlCall call) {
       if (call.getOperator() == SqlStdOperatorTable.EQUALS) {
         SqlNode left = call.operand(0);
         SqlNode right = call.operand(1);
 
-        if (left instanceof SqlIdentifier && right instanceof SqlIdentifier) {
-          SqlIdentifier leftId = (SqlIdentifier) left;
-          SqlIdentifier rightId = (SqlIdentifier) right;
+        if (left instanceof SqlIdentifier leftId && right instanceof SqlIdentifier rightId) {
 
           String leftColumn = extractColumnName(leftId);
           String rightColumn = extractColumnName(rightId);
@@ -299,7 +359,6 @@ public class SparqlBuilder implements SqlVisitor<Void> {
           String leftVar = getOrCreateVar(leftAlias);
           String rightVar = getOrCreateVar(rightAlias);
 
-          // Create join pattern
           whereClause
               .append("  ?")
               .append(leftVar)
@@ -316,11 +375,9 @@ public class SparqlBuilder implements SqlVisitor<Void> {
   private void processOrderBy(SqlNodeList orderList) {
     StringBuilder orderBy = new StringBuilder("ORDER BY ");
     for (SqlNode node : orderList) {
-      if (node instanceof SqlCall) {
-        SqlCall call = (SqlCall) node;
+      if (node instanceof SqlCall call) {
         SqlNode expr = call.operand(0);
-        if (expr instanceof SqlIdentifier) {
-          SqlIdentifier id = (SqlIdentifier) expr;
+        if (expr instanceof SqlIdentifier id) {
           String columnName = extractColumnName(id);
           String tableAlias = extractTableAlias(id);
           String var = getOrCreateVar(tableAlias);
@@ -337,8 +394,7 @@ public class SparqlBuilder implements SqlVisitor<Void> {
   }
 
   private void processLimit(SqlNode fetch) {
-    if (fetch instanceof SqlLiteral) {
-      SqlLiteral literal = (SqlLiteral) fetch;
+    if (fetch instanceof SqlLiteral literal) {
       limitClause = "LIMIT " + literal.toValue();
     }
   }

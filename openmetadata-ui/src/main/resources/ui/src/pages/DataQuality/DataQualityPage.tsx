@@ -16,11 +16,12 @@ import { Button, Card, Col, Dropdown, Row, Space, Tabs } from 'antd';
 import { isEmpty } from 'lodash';
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import TabsLabel from '../../components/common/TabsLabel/TabsLabel.component';
 import TestCaseFormV1 from '../../components/DataQuality/AddDataQualityTest/components/TestCaseFormV1';
 import BundleSuiteForm from '../../components/DataQuality/BundleSuiteForm/BundleSuiteForm';
 import PageHeader from '../../components/PageHeader/PageHeader.component';
+import { LEARNING_PAGE_IDS } from '../../constants/Learning.constants';
 import { usePermissionProvider } from '../../context/PermissionProvider/PermissionProvider';
 import { TestCase } from '../../generated/tests/testCase';
 import { TestSuite } from '../../generated/tests/testSuite';
@@ -30,7 +31,6 @@ import {
   getTestCaseDetailPagePath,
   getTestSuitePath,
 } from '../../utils/RouterUtils';
-import { useRequiredParams } from '../../utils/useRequiredParams';
 import './data-quality-page.less';
 import DataQualityClassBase from './DataQualityClassBase';
 import { DataQualityPageTabs } from './DataQualityPage.interface';
@@ -38,7 +38,7 @@ import DataQualityProvider from './DataQualityProvider';
 
 const DataQualityPage = () => {
   const { tab: activeTab = DataQualityClassBase.getDefaultActiveTab() } =
-    useRequiredParams<{ tab: DataQualityPageTabs }>();
+    useParams<{ tab?: DataQualityPageTabs }>();
   const navigate = useNavigate();
   const { t } = useTranslation();
   const { permissions } = usePermissionProvider();
@@ -48,7 +48,6 @@ const DataQualityPage = () => {
   const [isTestCaseModalOpen, setIsTestCaseModalOpen] = useState(false);
   const [isBundleSuiteModalOpen, setIsBundleSuiteModalOpen] = useState(false);
 
-  // Add handlers for modal
   const handleOpenTestCaseModal = () => {
     setIsTestCaseModalOpen(true);
   };
@@ -139,6 +138,7 @@ const DataQualityPage = () => {
                     header: t('label.data-quality'),
                     subHeader: t('message.page-sub-header-for-data-quality'),
                   }}
+                  learningPageId={LEARNING_PAGE_IDS.DATA_QUALITY}
                 />
               </Col>
 
@@ -169,7 +169,7 @@ const DataQualityPage = () => {
                 {activeTab === DataQualityPageTabs.DASHBOARD &&
                   !isEmpty(addButtonContent) && (
                     <Dropdown
-                      className="m-l-md h-10"
+                      className="m-l-md"
                       menu={{
                         items: addButtonContent,
                       }}
@@ -213,9 +213,7 @@ const DataQualityPage = () => {
       )}
       {isBundleSuiteModalOpen && (
         <BundleSuiteForm
-          drawerProps={{
-            open: isBundleSuiteModalOpen,
-          }}
+          drawerProps={{ open: isBundleSuiteModalOpen }}
           onCancel={handleCloseBundleSuiteModal}
           onSuccess={handleBundleSuiteSuccess}
         />

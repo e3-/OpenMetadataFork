@@ -37,6 +37,8 @@ export type DataAssetSummaryPanelProps = {
   onDataProductsUpdate?: (updatedDataProducts: EntityReference[]) => void;
   onGlossaryTermsUpdate?: (updatedGlossaryTerms: TagLabel[]) => void;
   onDescriptionUpdate?: (updatedDescription: string) => void;
+  onLinkClick?: () => void;
+  onLineageClick?: () => void;
 };
 
 export interface TestCaseStatusCounts {

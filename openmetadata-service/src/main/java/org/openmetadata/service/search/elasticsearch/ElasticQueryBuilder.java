@@ -247,22 +247,24 @@ public class ElasticQueryBuilder {
     return Query.of(
         q ->
             q.range(
-                r -> {
-                  r.field(field);
-                  if (gte != null) {
-                    r.gte(es.co.elastic.clients.json.JsonData.of(gte));
-                  }
-                  if (lte != null) {
-                    r.lte(es.co.elastic.clients.json.JsonData.of(lte));
-                  }
-                  if (gt != null) {
-                    r.gt(es.co.elastic.clients.json.JsonData.of(gt));
-                  }
-                  if (lt != null) {
-                    r.lt(es.co.elastic.clients.json.JsonData.of(lt));
-                  }
-                  return r;
-                }));
+                r ->
+                    r.untyped(
+                        u -> {
+                          u.field(field);
+                          if (gte != null) {
+                            u.gte(es.co.elastic.clients.json.JsonData.of(gte));
+                          }
+                          if (lte != null) {
+                            u.lte(es.co.elastic.clients.json.JsonData.of(lte));
+                          }
+                          if (gt != null) {
+                            u.gt(es.co.elastic.clients.json.JsonData.of(gt));
+                          }
+                          if (lt != null) {
+                            u.lt(es.co.elastic.clients.json.JsonData.of(lt));
+                          }
+                          return u;
+                        })));
   }
 
   public static Query existsQuery(String field) {
@@ -270,7 +272,7 @@ public class ElasticQueryBuilder {
   }
 
   public static Query nestedQuery(String path, Query query) {
-    return Query.of(q -> q.nested(n -> n.path(path).query(query)));
+    return Query.of(q -> q.nested(n -> n.path(path).query(query).ignoreUnmapped(true)));
   }
 
   public static Query functionScoreQuery(

@@ -28,6 +28,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { ReactComponent as IconTag } from '../../assets/svg/classification.svg';
+import { ReactComponent as IconDisableTag } from '../../assets/svg/disable-tag.svg';
 import { ReactComponent as EditIcon } from '../../assets/svg/edit-new.svg';
 import { ReactComponent as IconDelete } from '../../assets/svg/ic-delete.svg';
 import { ReactComponent as IconDropdown } from '../../assets/svg/menu.svg';
@@ -45,10 +46,12 @@ import ResizablePanels from '../../components/common/ResizablePanels/ResizablePa
 import StatusBadge from '../../components/common/StatusBadge/StatusBadge.component';
 import { StatusType } from '../../components/common/StatusBadge/StatusBadge.interface';
 import TabsLabel from '../../components/common/TabsLabel/TabsLabel.component';
+import { TabProps } from '../../components/common/TabsLabel/TabsLabel.interface';
 import { TitleBreadcrumbProps } from '../../components/common/TitleBreadcrumb/TitleBreadcrumb.interface';
 import { GenericProvider } from '../../components/Customization/GenericProvider/GenericProvider';
 import { GenericTab } from '../../components/Customization/GenericTab/GenericTab';
 import { AssetSelectionModal } from '../../components/DataAssets/AssetsSelectionModal/AssetSelectionModal';
+import DataQualityDashboard from '../../components/DataQuality/DataQualityDashboard/DataQualityDashboard.component';
 import { EntityHeader } from '../../components/Entity/EntityHeader/EntityHeader.component';
 import { EntityStatusBadge } from '../../components/Entity/EntityStatusBadge/EntityStatusBadge.component';
 import EntitySummaryPanel from '../../components/Explore/EntitySummaryPanel/EntitySummaryPanel.component';
@@ -57,9 +60,10 @@ import AssetsTabs, {
   AssetsTabRef,
 } from '../../components/Glossary/GlossaryTerms/tabs/AssetsTabs.component';
 import { AssetsOfEntity } from '../../components/Glossary/GlossaryTerms/tabs/AssetsTabs.interface';
+import { LearningIcon } from '../../components/Learning/LearningIcon/LearningIcon.component';
 import EntityDeleteModal from '../../components/Modals/EntityDeleteModal/EntityDeleteModal';
 import EntityNameModal from '../../components/Modals/EntityNameModal/EntityNameModal.component';
-import StyleModal from '../../components/Modals/StyleModal/StyleModal.component';
+import IconColorModal from '../../components/Modals/IconColorModal';
 import PageLayoutV1 from '../../components/PageLayoutV1/PageLayoutV1';
 import {
   BLACK_COLOR,
@@ -69,6 +73,7 @@ import {
 import { CustomizeEntityType } from '../../constants/Customize.constants';
 import { TAGS_DOCS } from '../../constants/docs.constants';
 import { FEED_COUNT_INITIAL_DATA } from '../../constants/entity.constants';
+import { LEARNING_PAGE_IDS } from '../../constants/Learning.constants';
 import { COMMON_RESIZABLE_PANEL_CONFIG } from '../../constants/ResizablePanel.constants';
 import { usePermissionProvider } from '../../context/PermissionProvider/PermissionProvider';
 import {
@@ -76,7 +81,11 @@ import {
   ResourceEntity,
 } from '../../context/PermissionProvider/PermissionProvider.interface';
 import { ERROR_PLACEHOLDER_TYPE } from '../../enums/common.enum';
-import { EntityType, TabSpecificField } from '../../enums/entity.enum';
+import {
+  EntityTabs,
+  EntityType,
+  TabSpecificField,
+} from '../../enums/entity.enum';
 import { SearchIndex } from '../../enums/search.enum';
 import { ProviderType, Tag } from '../../generated/entity/classification/tag';
 import { EntityStatus } from '../../generated/entity/data/glossaryTerm';
@@ -89,27 +98,27 @@ import { searchQuery } from '../../rest/searchAPI';
 import { deleteTag, getTagByFqn, patchTag } from '../../rest/tagAPI';
 import { getEntityDeleteMessage, getFeedCounts } from '../../utils/CommonUtils';
 import entityUtilClassBase from '../../utils/EntityUtilClassBase';
+import { renderIcon } from '../../utils/IconUtils';
 import { DEFAULT_ENTITY_PERMISSION } from '../../utils/PermissionsUtils';
 import {
   getClassificationDetailsPath,
   getClassificationTagPath,
 } from '../../utils/RouterUtils';
+import tagClassBase from '../../utils/TagClassBase';
 import {
   getExcludedIndexesBasedOnEntityTypeEditTagPermission,
   getQueryFilterToExcludeTermsAndEntities,
   getTagAssetsQueryFilter,
-  getTagImageSrc,
 } from '../../utils/TagsUtils';
 import { showErrorToast, showSuccessToast } from '../../utils/ToastUtils';
 import { useRequiredParams } from '../../utils/useRequiredParams';
 import './tag-page.less';
-import { TagTabs } from './TagPage.inteface';
 
 const TagPage = () => {
   const { t } = useTranslation();
   const { fqn: tagFqn } = useFqn();
   const navigate = useNavigate();
-  const { tab: activeTab = TagTabs.OVERVIEW } = useRequiredParams<{
+  const { tab: activeTab = EntityTabs.OVERVIEW } = useRequiredParams<{
     tab?: string;
   }>();
   const { permissions, getEntityPermission } = usePermissionProvider();
@@ -202,6 +211,11 @@ const TagPage = () => {
   const isCertificationClassification = useMemo(
     () => startsWith(tagFqn, 'Certification.'),
     [tagFqn]
+  );
+
+  const showDisableOption = useMemo(
+    () => tagPermissions.EditAll && !tagItem?.deleted,
+    [tagPermissions.EditAll, tagItem?.deleted]
   );
 
   const fetchCurrentTagPermission = async () => {
@@ -302,6 +316,16 @@ const TagPage = () => {
     }
   };
 
+  const handleEnableDisableTagClick = useCallback(async () => {
+    if (tagItem) {
+      const updatedTag = {
+        ...tagItem,
+        disabled: !tagItem.disabled,
+      };
+      await updateTag(updatedTag);
+    }
+  }, [tagItem, updateTag]);
+
   const handleTagDelete = async (id: string) => {
     try {
       await deleteTag(id);
@@ -378,8 +402,10 @@ const TagPage = () => {
   const handleAssetSave = useCallback(() => {
     fetchClassificationTagAssets();
     assetTabRef.current?.refreshAssets();
-    activeTab !== TagTabs.ASSETS && activeTabHandler(TagTabs.ASSETS);
-  }, [assetTabRef]);
+    if (activeTab !== EntityTabs.ASSETS) {
+      activeTabHandler(EntityTabs.ASSETS);
+    }
+  }, [assetTabRef, activeTab, activeTabHandler, fetchClassificationTagAssets]);
 
   const manageButtonContent: ItemType[] = [
     ...(editTagsPermission
@@ -422,6 +448,32 @@ const TagPage = () => {
           },
         ]
       : []),
+    ...(showDisableOption
+      ? [
+          {
+            label: (
+              <ManageButtonItemLabel
+                description={
+                  tagItem?.disabled
+                    ? t('message.enable-tag-description')
+                    : t('message.disable-tag-description')
+                }
+                icon={IconDisableTag}
+                id="enable-disable-tag"
+                name={
+                  tagItem?.disabled ? t('label.enable') : t('label.disable')
+                }
+              />
+            ),
+            key: 'disable-button',
+            onClick: (e: { domEvent: { stopPropagation: () => void } }) => {
+              e.domEvent.stopPropagation();
+              handleEnableDisableTagClick();
+              setShowActions(false);
+            },
+          },
+        ]
+      : []),
     ...(tagItem?.provider !== ProviderType.System && tagPermissions.EditAll
       ? [
           {
@@ -454,22 +506,28 @@ const TagPage = () => {
       return [];
     }
 
-    const items = [
+    const tabs: TabProps[] = [
       {
-        label: <TabsLabel id={TagTabs.OVERVIEW} name={t('label.overview')} />,
-        key: 'overview',
+        label: (
+          <TabsLabel
+            id={EntityTabs.OVERVIEW}
+            isActive={activeTab === EntityTabs.OVERVIEW}
+            name={t('label.overview')}
+          />
+        ),
+        key: EntityTabs.OVERVIEW,
         children: <GenericTab type={PageType.Tag} />,
       },
       {
         label: (
           <TabsLabel
-            count={assetCount ?? 0}
-            id="assets"
-            isActive={activeTab === TagTabs.ASSETS}
+            count={assetCount}
+            id={EntityTabs.ASSETS}
+            isActive={activeTab === EntityTabs.ASSETS}
             name={t('label.asset-plural')}
           />
         ),
-        key: 'assets',
+        key: EntityTabs.ASSETS,
         children: (
           <ResizablePanels
             className="tag-height-with-resizable-panel"
@@ -520,12 +578,12 @@ const TagPage = () => {
         label: (
           <TabsLabel
             count={feedCount.totalCount}
-            id={TagTabs.ACTIVITY_FEED}
-            isActive={activeTab === TagTabs.ACTIVITY_FEED}
+            id={EntityTabs.ACTIVITY_FEED}
+            isActive={activeTab === EntityTabs.ACTIVITY_FEED}
             name={t('label.activity-feed-and-task-plural')}
           />
         ),
-        key: TagTabs.ACTIVITY_FEED,
+        key: EntityTabs.ACTIVITY_FEED,
         children: (
           <ActivityFeedTab
             refetchFeed
@@ -541,32 +599,60 @@ const TagPage = () => {
           />
         ),
       },
+      {
+        key: EntityTabs.DATA_OBSERVABILITY,
+        label: (
+          <TabsLabel
+            id={EntityTabs.DATA_OBSERVABILITY}
+            isActive={activeTab === EntityTabs.DATA_OBSERVABILITY}
+            name={t('label.data-observability')}
+          />
+        ),
+        children: (
+          <div className="tag-page-dq-tab-pane">
+            <DataQualityDashboard
+              isGovernanceView
+              className="data-quality-governance-tab-wrapper"
+              hiddenFilters={['tags']}
+              initialFilters={
+                tagItem.fullyQualifiedName
+                  ? { tags: [tagItem.fullyQualifiedName] }
+                  : undefined
+              }
+            />
+          </div>
+        ),
+      },
     ];
 
-    return items;
+    tabs.push(
+      ...tagClassBase.getAdditionalTagDetailPageTabs(tagItem, activeTab)
+    );
+
+    return tabs;
   }, [
     tagItem,
-    previewAsset,
     activeTab,
     assetCount,
     feedCount,
-    assetTabRef,
+    previewAsset,
+    isCertificationClassification,
+    haveAssetEditPermission,
     handleAssetSave,
-    editTagsPermission,
+    handleAssetClick,
+    handleFeedCount,
+    assetTabRef,
+    t,
   ]);
   const icon = useMemo(() => {
     if (tagItem?.style?.iconURL) {
-      const iconUrl = getTagImageSrc(tagItem.style.iconURL);
-
       return (
-        <img
-          alt={tagItem.name ?? t('label.tag')}
-          className="align-middle object-contain"
-          data-testid="icon"
-          height={36}
-          src={iconUrl}
-          width={32}
-        />
+        <div className="align-middle" data-testid="icon">
+          {renderIcon(tagItem.style.iconURL, {
+            size: 36,
+            className: 'object-contain',
+          })}
+        </div>
       );
     }
 
@@ -659,6 +745,12 @@ const TagPage = () => {
                 entityType={EntityType.TAG}
                 icon={icon}
                 serviceName={tagItem.name}
+                suffix={
+                  <LearningIcon
+                    className="m-t-xss"
+                    pageId={LEARNING_PAGE_IDS.TAGS}
+                  />
+                }
                 titleColor={tagItem.style?.color ?? BLACK_COLOR}
               />
             </Col>
@@ -711,7 +803,7 @@ const TagPage = () => {
 
         <GenericProvider<Tag>
           customizedPage={customizedPage}
-          data={tagItem as Tag}
+          data={tagItem}
           isVersionView={false}
           permissions={disabledAwarePermissions}
           type={EntityType.TAG as CustomizeEntityType}
@@ -766,7 +858,7 @@ const TagPage = () => {
         onCancel={() => setIsNameEditing(false)}
         onSave={onNameSave}
       />
-      <StyleModal
+      <IconColorModal
         open={isStyleEditing}
         style={tagItem.style}
         onCancel={() => setIsStyleEditing(false)}

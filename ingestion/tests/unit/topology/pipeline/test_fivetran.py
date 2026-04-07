@@ -117,6 +117,28 @@ MOCK_PIPELINE = Pipeline(
 )
 
 
+class TestGetDatabaseName:
+    def test_returns_database_key(self):
+        details = {"config": {"database": "my_database"}}
+        assert FivetranSource._get_database_name(details) == "my_database"
+
+    def test_returns_catalog_key(self):
+        details = {"config": {"catalog": "my_catalog"}}
+        assert FivetranSource._get_database_name(details) == "my_catalog"
+
+    def test_returns_project_id_key(self):
+        details = {"config": {"project_id": "my_project_id"}}
+        assert FivetranSource._get_database_name(details) == "my_project_id"
+
+    def test_returns_project_key(self):
+        details = {"config": {"project": "my_project"}}
+        assert FivetranSource._get_database_name(details) == "my_project"
+
+    def test_returns_none_when_no_key_matches(self):
+        details = {"config": {"host": "localhost"}}
+        assert FivetranSource._get_database_name(details) is None
+
+
 class FivetranUnitTest(TestCase):
     @patch(
         "metadata.ingestion.source.pipeline.pipeline_service.PipelineServiceSource.test_connection"
@@ -284,5 +306,86 @@ class FivetranUnitTest(TestCase):
                 == mock_pipeline.id.root
             )
             assert lineage.edge.lineageDetails.pipeline.type == "pipeline"
+        finally:
+            self.fivetran.metadata = original_metadata
+
+    @patch(
+        "metadata.ingestion.source.pipeline.fivetran.metadata.FivetranSource.get_db_service_names"
+    )
+    @patch("metadata.utils.fqn.build")
+    def test_yield_lineage_skips_self_referencing_tables(
+        self, mock_build, mock_get_services
+    ):
+        """
+        Test that lineage is NOT created when source and destination
+        are the same table (self-referencing loop).
+
+        Scenario: Fivetran copies a table in-place (e.g., backup/versioning)
+        Expected: No lineage entry created (empty result)
+        """
+        mock_get_services.return_value = ["postgres_service"]
+
+        # Create mock table with SAME entity ID for both source and destination
+        same_table_id = str(uuid4())
+        mock_same_table = Mock()
+        mock_same_table.id = same_table_id
+
+        mock_pipeline = Mock()
+        mock_pipeline.id.root = str(uuid4())
+
+        # FQN builder returns different FQNs (simulating table rename)
+        def build_side_effect(metadata, entity_type, **kwargs):
+            service = kwargs.get("service_name", "")
+            database = kwargs.get("database_name", "")
+            schema = kwargs.get("schema_name", "")
+            table = kwargs.get("table_name", "")
+            return ".".join(
+                str(part) for part in [service, database, schema, table] if part
+            )
+
+        mock_build.side_effect = build_side_effect
+
+        # get_by_name returns SAME entity for both source and destination lookups
+        def get_by_name_side_effect(entity, fqn):
+            fqn_str = str(fqn)
+            if "orders" in fqn_str:  # Both source and dest resolve to same entity
+                return mock_same_table
+            elif "pipeline" in fqn_str or "fivetran" in fqn_str:
+                return mock_pipeline
+            return None
+
+        original_metadata = self.fivetran.metadata
+        mock_metadata = Mock()
+        mock_metadata.get_by_name = Mock(side_effect=get_by_name_side_effect)
+        self.fivetran.metadata = mock_metadata
+
+        try:
+            # Mock Fivetran schema details: source "orders" → destination "orders"
+            self.client.get_connector_schema_details.return_value = {
+                "public": {
+                    "enabled": True,
+                    "name_in_destination": "public",
+                    "tables": {
+                        "orders": {
+                            "enabled": True,
+                            "name_in_destination": "orders",  # Same table name
+                        }
+                    },
+                }
+            }
+
+            self.client.get_connector_column_lineage.return_value = {}
+
+            # Execute lineage generation
+            result = list(
+                self.fivetran.yield_pipeline_lineage_details(EXPECTED_FIVETRAN_DETAILS)
+            )
+
+            # ASSERTION: No lineage should be created for self-referencing tables
+            assert len(result) == 0, (
+                f"Expected no lineage for self-referencing table, but got {len(result)} entries. "
+                f"Self-lineage loops (table → same table) should be prevented."
+            )
+
         finally:
             self.fivetran.metadata = original_metadata

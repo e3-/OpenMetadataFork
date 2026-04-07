@@ -64,4 +64,28 @@ public class ReindexContext {
   public boolean isEmpty() {
     return stagedIndexByEntity.isEmpty();
   }
+
+  /**
+   * Get the complete staged index mapping for serialization/sharing with participant servers.
+   *
+   * @return Map of entity type to staged index name
+   */
+  public Map<String, String> getStagedIndexMapping() {
+    return new HashMap<>(stagedIndexByEntity);
+  }
+
+  /**
+   * Create a minimal ReindexContext from a staged index mapping. Used by participant servers to
+   * reconstruct context from the job's stored mapping.
+   *
+   * @param stagedIndexMapping Map of entity type to staged index name
+   * @return A ReindexContext with only staged index information
+   */
+  public static ReindexContext fromStagedIndexMapping(Map<String, String> stagedIndexMapping) {
+    ReindexContext context = new ReindexContext();
+    if (stagedIndexMapping != null) {
+      context.stagedIndexByEntity.putAll(stagedIndexMapping);
+    }
+    return context;
+  }
 }

@@ -25,6 +25,19 @@ public interface SearchManagementClient {
   Response search(SearchRequest request, SubjectContext subjectContext) throws IOException;
 
   /**
+   * Execute a search returning typed results for export.
+   * Uses the same query-building logic as {@link #search} but returns a {@link SearchResultListMapper}
+   * instead of a serialized JAX-RS Response, avoiding double serialization/deserialization.
+   *
+   * @param request the search request
+   * @param subjectContext the subject context for RBAC evaluation
+   * @return typed search results with hits and sort values
+   * @throws IOException if search execution fails
+   */
+  SearchResultListMapper searchForExport(SearchRequest request, SubjectContext subjectContext)
+      throws IOException;
+
+  /**
    * Execute a preview search with custom search settings.
    * This is typically used for testing search configurations before applying them.
    *
@@ -81,6 +94,31 @@ public interface SearchManagementClient {
       SearchSortFilter searchSortFilter,
       String q,
       String queryString)
+      throws IOException;
+
+  /**
+   * List entities with pagination support and RBAC enforcement.
+   *
+   * @param filter JSON filter to apply to the search
+   * @param limit maximum number of results to return
+   * @param offset starting position for results
+   * @param index the index to search in
+   * @param searchSortFilter sorting configuration
+   * @param q search query string
+   * @param queryString raw query DSL string
+   * @param subjectContext the subject context for RBAC evaluation
+   * @return response containing paginated search results
+   * @throws IOException if search execution fails
+   */
+  SearchResultListMapper listWithOffset(
+      String filter,
+      int limit,
+      int offset,
+      String index,
+      SearchSortFilter searchSortFilter,
+      String q,
+      String queryString,
+      SubjectContext subjectContext)
       throws IOException;
 
   /**

@@ -16,6 +16,7 @@ import static org.openmetadata.service.util.FullyQualifiedName.getParentFQN;
 
 import es.co.elastic.clients.elasticsearch.ElasticsearchClient;
 import es.co.elastic.clients.elasticsearch._types.ElasticsearchException;
+import es.co.elastic.clients.elasticsearch._types.ErrorCause;
 import es.co.elastic.clients.elasticsearch._types.FieldValue;
 import es.co.elastic.clients.elasticsearch._types.SortMode;
 import es.co.elastic.clients.elasticsearch._types.SortOrder;
@@ -29,6 +30,7 @@ import es.co.elastic.clients.elasticsearch.core.SearchResponse;
 import es.co.elastic.clients.elasticsearch.core.search.Hit;
 import es.co.elastic.clients.json.JsonData;
 import es.co.elastic.clients.json.JsonpMapper;
+import io.micrometer.core.instrument.Timer;
 import jakarta.json.Json;
 import jakarta.json.JsonObject;
 import jakarta.json.JsonReader;
@@ -51,6 +53,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 import lombok.extern.slf4j.Slf4j;
+import org.jetbrains.annotations.NotNull;
 import org.openmetadata.common.utils.CommonUtil;
 import org.openmetadata.schema.api.lineage.EsLineageData;
 import org.openmetadata.schema.api.search.AssetTypeConfiguration;
@@ -71,6 +74,7 @@ import org.openmetadata.service.resources.settings.SettingsCache;
 import org.openmetadata.service.search.SearchManagementClient;
 import org.openmetadata.service.search.SearchResultListMapper;
 import org.openmetadata.service.search.SearchSortFilter;
+import org.openmetadata.service.search.SearchSourceBuilderFactory;
 import org.openmetadata.service.search.SearchUtils;
 import org.openmetadata.service.search.elasticsearch.queries.ElasticQueryBuilder;
 import org.openmetadata.service.search.nlq.NLQService;
@@ -149,7 +153,15 @@ public class ElasticSearchSearchManager implements SearchManagementClient {
                                     b.must(
                                         m -> m.term(t -> t.field("sourceUrl").value(sourceUrl))))));
 
-    SearchResponse<JsonData> response = client.search(searchRequest, JsonData.class);
+    Timer.Sample searchTimerSample = RequestLatencyContext.startSearchOperation();
+    SearchResponse<JsonData> response;
+    try {
+      response = client.search(searchRequest, JsonData.class);
+    } finally {
+      if (searchTimerSample != null) {
+        RequestLatencyContext.endSearchOperation(searchTimerSample);
+      }
+    }
     String responseJson = serializeSearchResponse(response);
     return Response.status(OK).entity(responseJson).build();
   }
@@ -176,7 +188,15 @@ public class ElasticSearchSearchManager implements SearchManagementClient {
                                         .filter(
                                             f -> f.term(t -> t.field("deleted").value(deleted))))));
 
-    SearchResponse<JsonData> response = client.search(searchRequest, JsonData.class);
+    Timer.Sample searchTimerSample = RequestLatencyContext.startSearchOperation();
+    SearchResponse<JsonData> response;
+    try {
+      response = client.search(searchRequest, JsonData.class);
+    } finally {
+      if (searchTimerSample != null) {
+        RequestLatencyContext.endSearchOperation(searchTimerSample);
+      }
+    }
     String responseJson = serializeSearchResponse(response);
     return Response.status(OK).entity(responseJson).build();
   }
@@ -220,6 +240,59 @@ public class ElasticSearchSearchManager implements SearchManagementClient {
       applySearchFilter(filter, requestBuilder);
     }
 
+    return doListWithOffset(limit, offset, index, searchSortFilter, requestBuilder);
+  }
+
+  @Override
+  public SearchResultListMapper listWithOffset(
+      String filter,
+      int limit,
+      int offset,
+      String index,
+      SearchSortFilter searchSortFilter,
+      String q,
+      String queryString,
+      SubjectContext subjectContext)
+      throws IOException {
+    if (!isClientAvailable) {
+      throw new IOException("Elasticsearch client is not available");
+    }
+
+    ElasticSearchRequestBuilder requestBuilder = new ElasticSearchRequestBuilder();
+
+    if (!nullOrEmpty(q)) {
+      ElasticSearchSourceBuilderFactory searchBuilderFactory = getSearchBuilderFactory();
+      requestBuilder =
+          searchBuilderFactory.getSearchSourceBuilderV2(index, q, offset, limit, false);
+    }
+
+    if (!nullOrEmpty(queryString)) {
+      try {
+        String queryToProcess = EsUtils.parseJsonQuery(queryString);
+        Query query = Query.of(qb -> qb.withJson(new StringReader(queryToProcess)));
+        requestBuilder.query(query);
+      } catch (Exception e) {
+        LOG.warn("Error parsing queryString parameter, ignoring: {}", e.getMessage());
+      }
+    }
+
+    if (!nullOrEmpty(filter) && !filter.equals("{}")) {
+      applySearchFilter(filter, requestBuilder);
+    }
+
+    applyRbacCondition(subjectContext, requestBuilder);
+
+    return doListWithOffset(limit, offset, index, searchSortFilter, requestBuilder);
+  }
+
+  @NotNull
+  private SearchResultListMapper doListWithOffset(
+      int limit,
+      int offset,
+      String index,
+      SearchSortFilter searchSortFilter,
+      ElasticSearchRequestBuilder requestBuilder)
+      throws IOException {
     requestBuilder.timeout("30s");
     requestBuilder.from(offset);
     requestBuilder.size(limit);
@@ -248,7 +321,15 @@ public class ElasticSearchSearchManager implements SearchManagementClient {
 
     try {
       SearchRequest searchRequest = requestBuilder.build(index);
-      SearchResponse<JsonData> response = client.search(searchRequest, JsonData.class);
+      Timer.Sample searchTimerSample = RequestLatencyContext.startSearchOperation();
+      SearchResponse<JsonData> response;
+      try {
+        response = client.search(searchRequest, JsonData.class);
+      } finally {
+        if (searchTimerSample != null) {
+          RequestLatencyContext.endSearchOperation(searchTimerSample);
+        }
+      }
 
       List<Map<String, Object>> results = new ArrayList<>();
       if (response.hits().hits() != null) {
@@ -274,7 +355,32 @@ public class ElasticSearchSearchManager implements SearchManagementClient {
       if (e.status() == 404) {
         throw new SearchIndexNotFoundException(String.format("Failed to find index %s", index));
       } else {
-        throw new SearchException(String.format("Search failed due to %s", e.getMessage()));
+        throw buildSearchException(e);
+      }
+    }
+  }
+
+  private void applyRbacCondition(
+      SubjectContext subjectContext, ElasticSearchRequestBuilder requestBuilder) {
+    if (shouldApplyRbacConditions(subjectContext, rbacConditionEvaluator)) {
+      OMQueryBuilder rbacQueryBuilder = rbacConditionEvaluator.evaluateConditions(subjectContext);
+      if (rbacQueryBuilder != null) {
+        Query rbacQuery = ((ElasticQueryBuilder) rbacQueryBuilder).buildV2();
+        Query existingQuery = requestBuilder.query();
+        if (existingQuery != null) {
+          Query combinedQuery =
+              Query.of(
+                  qb ->
+                      qb.bool(
+                          b -> {
+                            b.must(existingQuery);
+                            b.filter(rbacQuery);
+                            return b;
+                          }));
+          requestBuilder.query(combinedQuery);
+        } else {
+          requestBuilder.query(rbacQuery);
+        }
       }
     }
   }
@@ -320,9 +426,7 @@ public class ElasticSearchSearchManager implements SearchManagementClient {
     if (searchAfter != null && searchAfter.length > 0) {
       List<String> searchAfterList = new ArrayList<>();
       for (Object value : searchAfter) {
-        if (value instanceof es.co.elastic.clients.elasticsearch._types.FieldValue) {
-          es.co.elastic.clients.elasticsearch._types.FieldValue fieldValue =
-              (es.co.elastic.clients.elasticsearch._types.FieldValue) value;
+        if (value instanceof FieldValue fieldValue) {
           searchAfterList.add(String.valueOf(fieldValue._get()));
         } else {
           searchAfterList.add(String.valueOf(value));
@@ -356,7 +460,15 @@ public class ElasticSearchSearchManager implements SearchManagementClient {
 
     try {
       SearchRequest searchRequest = requestBuilder.build(index);
-      SearchResponse<JsonData> response = client.search(searchRequest, JsonData.class);
+      Timer.Sample searchTimerSample = RequestLatencyContext.startSearchOperation();
+      SearchResponse<JsonData> response;
+      try {
+        response = client.search(searchRequest, JsonData.class);
+      } finally {
+        if (searchTimerSample != null) {
+          RequestLatencyContext.endSearchOperation(searchTimerSample);
+        }
+      }
 
       List<Map<String, Object>> results = new ArrayList<>();
       Object[] lastHitSortValues = null;
@@ -407,7 +519,7 @@ public class ElasticSearchSearchManager implements SearchManagementClient {
       if (e.status() == 404) {
         throw new SearchIndexNotFoundException(String.format("Failed to find index %s", index));
       } else {
-        throw new SearchException(String.format("Search failed due to %s", e.getMessage()));
+        throw buildSearchException(e);
       }
     }
   }
@@ -449,11 +561,13 @@ public class ElasticSearchSearchManager implements SearchManagementClient {
         addAggregationsToNLQQuery(requestBuilder, request.getIndex());
 
         SearchRequest searchRequest = requestBuilder.build(request.getIndex());
-        SearchResponse<JsonData> response = client.search(searchRequest, JsonData.class);
-
-        // End search operation timing
-        if (searchTimerSample != null) {
-          RequestLatencyContext.endSearchOperation(searchTimerSample);
+        SearchResponse<JsonData> response;
+        try {
+          response = client.search(searchRequest, JsonData.class);
+        } finally {
+          if (searchTimerSample != null) {
+            RequestLatencyContext.endSearchOperation(searchTimerSample);
+          }
         }
 
         // Cache successful queries
@@ -542,7 +656,15 @@ public class ElasticSearchSearchManager implements SearchManagementClient {
 
       // Build and execute search request
       SearchRequest searchRequest = requestBuilder.build(request.getIndex());
-      SearchResponse<JsonData> response = client.search(searchRequest, JsonData.class);
+      Timer.Sample searchTimerSample = RequestLatencyContext.startSearchOperation();
+      SearchResponse<JsonData> response;
+      try {
+        response = client.search(searchRequest, JsonData.class);
+      } finally {
+        if (searchTimerSample != null) {
+          RequestLatencyContext.endSearchOperation(searchTimerSample);
+        }
+      }
 
       String responseJson = serializeSearchResponse(response);
       LOG.debug("Direct query search completed successfully");
@@ -734,7 +856,16 @@ public class ElasticSearchSearchManager implements SearchManagementClient {
 
     Query boolQuery = Query.of(q -> q.bool(b -> b.must(mustQueries).filter(filterQueries)));
 
-    return client.search(s -> s.index(indexName).query(boolQuery).size(1000), JsonData.class);
+    Timer.Sample searchTimerSample = RequestLatencyContext.startSearchOperation();
+    SearchResponse<JsonData> response;
+    try {
+      response = client.search(s -> s.index(indexName).query(boolQuery).size(1000), JsonData.class);
+    } finally {
+      if (searchTimerSample != null) {
+        RequestLatencyContext.endSearchOperation(searchTimerSample);
+      }
+    }
+    return response;
   }
 
   private void applySearchFilter(String filter, ElasticSearchRequestBuilder requestBuilder)
@@ -759,8 +890,7 @@ public class ElasticSearchSearchManager implements SearchManagementClient {
 
         if (jsonObject.containsKey("_source")) {
           JsonValue sourceValue = jsonObject.get("_source");
-          if (sourceValue instanceof JsonObject) {
-            JsonObject sourceObj = (JsonObject) sourceValue;
+          if (sourceValue instanceof JsonObject sourceObj) {
             if (sourceObj.containsKey("include")) {
               includes =
                   sourceObj.getJsonArray("include").stream()
@@ -844,6 +974,94 @@ public class ElasticSearchSearchManager implements SearchManagementClient {
       SearchSettings searchSettings,
       String clusterAlias)
       throws IOException {
+    ElasticSearchRequestBuilder requestBuilder =
+        buildSearchRequestBuilder(request, subjectContext, searchSettings, clusterAlias);
+
+    LOG.debug("Executing search on index: {}, query: {}", request.getIndex(), request.getQuery());
+
+    try {
+      Timer.Sample searchTimerSample = RequestLatencyContext.startSearchOperation();
+
+      SearchRequest searchRequest = requestBuilder.build(request.getIndex());
+      SearchResponse<JsonData> searchResponse;
+      try {
+        searchResponse = client.search(searchRequest, JsonData.class);
+      } finally {
+        if (searchTimerSample != null) {
+          RequestLatencyContext.endSearchOperation(searchTimerSample);
+        }
+      }
+
+      if (!Boolean.TRUE.equals(request.getIsHierarchy())) {
+        String responseJson = serializeSearchResponse(searchResponse);
+        return Response.status(OK).entity(responseJson).build();
+      } else {
+        List<?> response = buildSearchHierarchy(request, searchResponse, clusterAlias);
+        return Response.status(OK).entity(response).build();
+      }
+
+    } catch (ElasticsearchException e) {
+      if (e.status() == 404) {
+        throw new SearchIndexNotFoundException(
+            String.format("Failed to find index %s", request.getIndex()));
+      } else {
+        throw buildSearchException(e);
+      }
+    }
+  }
+
+  @Override
+  public SearchResultListMapper searchForExport(
+      org.openmetadata.schema.search.SearchRequest request, SubjectContext subjectContext)
+      throws IOException {
+    SearchSettings searchSettings =
+        SettingsCache.getSetting(SettingsType.SEARCH_SETTINGS, SearchSettings.class);
+    ElasticSearchRequestBuilder requestBuilder =
+        buildSearchRequestBuilder(request, subjectContext, searchSettings, clusterAlias);
+
+    try {
+      SearchRequest searchRequest = requestBuilder.build(request.getIndex());
+      SearchResponse<JsonData> response = client.search(searchRequest, JsonData.class);
+
+      List<Map<String, Object>> results = new ArrayList<>();
+      Object[] lastHitSortValues = null;
+
+      if (response.hits().hits() != null && !response.hits().hits().isEmpty()) {
+        List<Hit<JsonData>> hits = response.hits().hits();
+        for (Hit<JsonData> hit : hits) {
+          if (hit.source() != null) {
+            results.add(EsUtils.jsonDataToMap(hit.source()));
+          }
+        }
+        Hit<JsonData> lastHit = hits.getLast();
+        if (lastHit.sort() != null && !lastHit.sort().isEmpty()) {
+          lastHitSortValues =
+              lastHit.sort().stream().map(fv -> fv == null ? null : fv._get()).toArray();
+        }
+      }
+
+      long totalHits = 0;
+      if (response.hits().total() != null) {
+        totalHits = response.hits().total().value();
+      }
+
+      return new SearchResultListMapper(results, totalHits, lastHitSortValues);
+    } catch (ElasticsearchException e) {
+      if (e.status() == 404) {
+        throw new SearchIndexNotFoundException(
+            String.format("Failed to find index %s", request.getIndex()));
+      } else {
+        throw buildSearchException(e);
+      }
+    }
+  }
+
+  private ElasticSearchRequestBuilder buildSearchRequestBuilder(
+      org.openmetadata.schema.search.SearchRequest request,
+      SubjectContext subjectContext,
+      SearchSettings searchSettings,
+      String clusterAlias)
+      throws IOException {
     if (!isClientAvailable) {
       throw new IOException("Elasticsearch client is not available");
     }
@@ -868,27 +1086,7 @@ public class ElasticSearchSearchManager implements SearchManagementClient {
         requestBuilder.query());
 
     // Apply RBAC query
-    if (shouldApplyRbacConditions(subjectContext, rbacConditionEvaluator)) {
-      OMQueryBuilder rbacQueryBuilder = rbacConditionEvaluator.evaluateConditions(subjectContext);
-      if (rbacQueryBuilder != null) {
-        Query rbacQuery = ((ElasticQueryBuilder) rbacQueryBuilder).buildV2();
-        Query existingQuery = requestBuilder.query();
-        if (existingQuery != null) {
-          Query combinedQuery =
-              Query.of(
-                  q ->
-                      q.bool(
-                          b -> {
-                            b.must(existingQuery);
-                            b.filter(rbacQuery);
-                            return b;
-                          }));
-          requestBuilder.query(combinedQuery);
-        } else {
-          requestBuilder.query(rbacQuery);
-        }
-      }
-    }
+    applyRbacCondition(subjectContext, requestBuilder);
 
     // Apply query filter
     if (!nullOrEmpty(request.getQueryFilter()) && !request.getQueryFilter().equals("{}")) {
@@ -986,14 +1184,18 @@ public class ElasticSearchSearchManager implements SearchManagementClient {
 
     // Handle sorting
     if (!nullOrEmpty(request.getSortFieldParam()) && !request.getIsHierarchy()) {
-      String sortField = request.getSortFieldParam();
+      String sortField =
+          SearchSourceBuilderFactory.resolveFieldForSortOrAggregation(request.getSortFieldParam());
       String sortTypeCapitalized =
           request.getSortOrder().substring(0, 1).toUpperCase()
               + request.getSortOrder().substring(1).toLowerCase();
       SortOrder sortOrder = SortOrder.valueOf(sortTypeCapitalized);
 
       if (!sortField.equalsIgnoreCase("_score")) {
-        requestBuilder.sort(sortField, sortOrder, "integer");
+        boolean isKeywordField =
+            sortField.endsWith(".keyword")
+                || SearchSourceBuilderFactory.KEYWORD_SORT_FIELDS.contains(sortField);
+        requestBuilder.sort(sortField, sortOrder, isKeywordField ? "keyword" : "integer");
       } else {
         requestBuilder.sort(sortField, sortOrder, null);
       }
@@ -1035,37 +1237,20 @@ public class ElasticSearchSearchManager implements SearchManagementClient {
     }
 
     requestBuilder.timeout("30s");
+    return requestBuilder;
+  }
 
-    LOG.debug("Executing search on index: {}, query: {}", request.getIndex(), request.getQuery());
-
-    try {
-      io.micrometer.core.instrument.Timer.Sample searchTimerSample =
-          org.openmetadata.service.monitoring.RequestLatencyContext.startSearchOperation();
-
-      SearchRequest searchRequest = requestBuilder.build(request.getIndex());
-      SearchResponse<JsonData> searchResponse = client.search(searchRequest, JsonData.class);
-
-      if (searchTimerSample != null) {
-        org.openmetadata.service.monitoring.RequestLatencyContext.endSearchOperation(
-            searchTimerSample);
-      }
-
-      if (!Boolean.TRUE.equals(request.getIsHierarchy())) {
-        String responseJson = serializeSearchResponse(searchResponse);
-        return Response.status(OK).entity(responseJson).build();
-      } else {
-        List<?> response = buildSearchHierarchy(request, searchResponse, clusterAlias);
-        return Response.status(OK).entity(response).build();
-      }
-
-    } catch (ElasticsearchException e) {
-      if (e.status() == 404) {
-        throw new SearchIndexNotFoundException(
-            String.format("Failed to find index %s", request.getIndex()));
-      } else {
-        throw new SearchException(String.format("Search failed due to %s", e.getMessage()));
-      }
+  private static SearchException buildSearchException(ElasticsearchException e) {
+    String detail = e.getMessage();
+    ErrorCause error = e.error();
+    if (error != null && error.rootCause() != null && !error.rootCause().isEmpty()) {
+      String rootCauses =
+          error.rootCause().stream()
+              .map(c -> c.type() + ": " + c.reason())
+              .collect(Collectors.joining("; "));
+      detail = String.format("%s | Root cause: [%s]", detail, rootCauses);
     }
+    return new SearchException(String.format("Search failed due to %s", detail));
   }
 
   private ElasticSearchRequestBuilder buildHierarchyQuery(
@@ -1077,8 +1262,12 @@ public class ElasticSearchSearchManager implements SearchManagementClient {
     String indexName = request.getIndex();
     String glossaryTermIndex =
         Entity.getSearchRepository().getIndexMapping(GLOSSARY_TERM).getIndexName(clusterAlias);
+    String glossaryTermAlias =
+        Entity.getSearchRepository().getIndexMapping(GLOSSARY_TERM).getAlias(clusterAlias);
     String domainIndex =
         Entity.getSearchRepository().getIndexMapping(DOMAIN).getIndexName(clusterAlias);
+    String domainAlias =
+        Entity.getSearchRepository().getIndexMapping(DOMAIN).getAlias(clusterAlias);
 
     Query existingQuery = requestBuilder.query();
     org.openmetadata.service.search.elasticsearch.ElasticQueryBuilder.BoolQueryBuilder
@@ -1098,7 +1287,8 @@ public class ElasticSearchSearchManager implements SearchManagementClient {
                             q.matchPhrase(
                                 mp -> mp.field("displayName").query(request.getQuery()))));
 
-    if (indexName.equalsIgnoreCase(glossaryTermIndex)) {
+    if (indexName.equalsIgnoreCase(glossaryTermIndex)
+        || indexName.equalsIgnoreCase(glossaryTermAlias)) {
       baseQueryBuilder
           .should(
               Query.of(
@@ -1111,7 +1301,7 @@ public class ElasticSearchSearchManager implements SearchManagementClient {
                       q.matchPhrase(
                           mp -> mp.field("glossary.displayName").query(request.getQuery()))))
           .must(Query.of(q -> q.match(m -> m.field("entityStatus").query("Approved"))));
-    } else if (indexName.equalsIgnoreCase(domainIndex)) {
+    } else if (indexName.equalsIgnoreCase(domainIndex) || indexName.equalsIgnoreCase(domainAlias)) {
       baseQueryBuilder
           .should(
               Query.of(
@@ -1126,7 +1316,8 @@ public class ElasticSearchSearchManager implements SearchManagementClient {
     }
 
     baseQueryBuilder.minimumShouldMatch(1);
-    requestBuilder.query(baseQueryBuilder.build());
+    Query originalQuery = baseQueryBuilder.build();
+    requestBuilder.query(originalQuery);
 
     // Add fqnParts aggregation to fetch parent terms
     requestBuilder.aggregation(
@@ -1134,7 +1325,15 @@ public class ElasticSearchSearchManager implements SearchManagementClient {
 
     // Execute search to get aggregations for parent terms
     SearchRequest searchRequest = requestBuilder.build(request.getIndex());
-    SearchResponse<JsonData> searchResponse = client.search(searchRequest, JsonData.class);
+    Timer.Sample searchTimerSample = RequestLatencyContext.startSearchOperation();
+    SearchResponse<JsonData> searchResponse;
+    try {
+      searchResponse = client.search(searchRequest, JsonData.class);
+    } finally {
+      if (searchTimerSample != null) {
+        RequestLatencyContext.endSearchOperation(searchTimerSample);
+      }
+    }
 
     if (searchResponse.aggregations() != null
         && searchResponse.aggregations().containsKey("fqnParts_agg")) {
@@ -1151,12 +1350,15 @@ public class ElasticSearchSearchManager implements SearchManagementClient {
           parentTermQueries.add(matchQuery);
         }
 
-        // Replace the query entirely with parent term queries (not combine)
-        Query parentTermQuery =
+        // Combine the original query with parent term queries to preserve relevance scores
+        Query combinedQuery =
             Query.of(
                 q ->
                     q.bool(
                         b -> {
+                          // Add the original query as a should clause to preserve high scores
+                          b.should(originalQuery);
+                          // Add parent term queries as should clauses to fetch hierarchy
                           parentTermQueries.forEach(b::should);
                           if (indexName.equalsIgnoreCase(glossaryTermIndex)) {
                             b.must(m -> m.match(ma -> ma.field("entityStatus").query("Approved")));
@@ -1164,11 +1366,13 @@ public class ElasticSearchSearchManager implements SearchManagementClient {
                           b.minimumShouldMatch("1");
                           return b;
                         }));
-        requestBuilder.query(parentTermQuery);
+        requestBuilder.query(combinedQuery);
       }
     }
 
-    // Add sorting by fullyQualifiedName for consistent hierarchy ordering
+    // Add sorting by score first for relevance, then by fullyQualifiedName for consistent hierarchy
+    // ordering
+    requestBuilder.sort("_score", SortOrder.Desc, null);
     requestBuilder.sort("fullyQualifiedName", SortOrder.Asc, "keyword");
 
     return requestBuilder;
@@ -1183,12 +1387,17 @@ public class ElasticSearchSearchManager implements SearchManagementClient {
     String indexName = request.getIndex();
     String glossaryTermIndex =
         Entity.getSearchRepository().getIndexMapping(GLOSSARY_TERM).getIndexName(clusterAlias);
+    String glossaryTermAlias =
+        Entity.getSearchRepository().getIndexMapping(GLOSSARY_TERM).getAlias(clusterAlias);
     String domainIndex =
         Entity.getSearchRepository().getIndexMapping(DOMAIN).getIndexName(clusterAlias);
+    String domainAlias =
+        Entity.getSearchRepository().getIndexMapping(DOMAIN).getAlias(clusterAlias);
 
-    if (indexName.equalsIgnoreCase(glossaryTermIndex)) {
+    if (indexName.equalsIgnoreCase(glossaryTermIndex)
+        || indexName.equalsIgnoreCase(glossaryTermAlias)) {
       response = buildGlossaryTermSearchHierarchy(searchResponse);
-    } else if (indexName.equalsIgnoreCase(domainIndex)) {
+    } else if (indexName.equalsIgnoreCase(domainIndex) || indexName.equalsIgnoreCase(domainAlias)) {
       response = buildDomainSearchHierarchy(searchResponse);
     }
     return response;
@@ -1331,7 +1540,15 @@ public class ElasticSearchSearchManager implements SearchManagementClient {
       addAggregationsToNLQQuery(requestBuilder, request.getIndex());
 
       SearchRequest searchRequest = requestBuilder.build(request.getIndex());
-      SearchResponse<JsonData> searchResponse = client.search(searchRequest, JsonData.class);
+      Timer.Sample searchTimerSample = RequestLatencyContext.startSearchOperation();
+      SearchResponse<JsonData> searchResponse;
+      try {
+        searchResponse = client.search(searchRequest, JsonData.class);
+      } finally {
+        if (searchTimerSample != null) {
+          RequestLatencyContext.endSearchOperation(searchTimerSample);
+        }
+      }
 
       return Response.status(Response.Status.OK)
           .entity(serializeSearchResponse(searchResponse))
@@ -1366,7 +1583,15 @@ public class ElasticSearchSearchManager implements SearchManagementClient {
                     .query(query)
                     .size(1000));
 
-    SearchResponse<JsonData> searchResponse = client.search(searchRequest, JsonData.class);
+    Timer.Sample searchTimerSample = RequestLatencyContext.startSearchOperation();
+    SearchResponse<JsonData> searchResponse;
+    try {
+      searchResponse = client.search(searchRequest, JsonData.class);
+    } finally {
+      if (searchTimerSample != null) {
+        RequestLatencyContext.endSearchOperation(searchTimerSample);
+      }
+    }
 
     for (Hit<JsonData> hit : searchResponse.hits().hits()) {
       if (hit.source() != null) {
@@ -1413,7 +1638,15 @@ public class ElasticSearchSearchManager implements SearchManagementClient {
                     .query(query)
                     .size(1000));
 
-    SearchResponse<JsonData> searchResponse = client.search(searchRequest, JsonData.class);
+    Timer.Sample searchTimerSample = RequestLatencyContext.startSearchOperation();
+    SearchResponse<JsonData> searchResponse;
+    try {
+      searchResponse = client.search(searchRequest, JsonData.class);
+    } finally {
+      if (searchTimerSample != null) {
+        RequestLatencyContext.endSearchOperation(searchTimerSample);
+      }
+    }
 
     for (Hit<JsonData> hit : searchResponse.hits().hits()) {
       if (hit.source() != null) {
@@ -1516,7 +1749,15 @@ public class ElasticSearchSearchManager implements SearchManagementClient {
                     .query(finalMainQuery)
                     .size(1000));
 
-    SearchResponse<JsonData> searchResponse = client.search(searchRequest, JsonData.class);
+    Timer.Sample searchTimerSample = RequestLatencyContext.startSearchOperation();
+    SearchResponse<JsonData> searchResponse;
+    try {
+      searchResponse = client.search(searchRequest, JsonData.class);
+    } finally {
+      if (searchTimerSample != null) {
+        RequestLatencyContext.endSearchOperation(searchTimerSample);
+      }
+    }
 
     for (Hit<JsonData> hit : searchResponse.hits().hits()) {
       if (hit.source() == null) {

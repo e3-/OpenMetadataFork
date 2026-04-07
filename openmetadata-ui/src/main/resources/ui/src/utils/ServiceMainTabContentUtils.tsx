@@ -13,10 +13,9 @@
 
 import { Typography } from 'antd';
 import { ColumnsType } from 'antd/lib/table';
-import { isUndefined } from 'lodash';
+import { Operation } from 'fast-json-patch';
 import { ServiceTypes } from 'Models';
 import DisplayName from '../components/common/DisplayName/DisplayName';
-import RichTextEditorPreviewerNew from '../components/common/RichTextEditor/RichTextEditorPreviewNew';
 import { EntityName } from '../components/Modals/EntityNameModal/EntityNameModal.interface';
 import { NO_DATA_PLACEHOLDER } from '../constants/constants';
 import { TABLE_COLUMNS_KEYS } from '../constants/TableKeys.constants';
@@ -40,10 +39,13 @@ import { t } from './i18next/LocalUtil';
 import { getLinkForFqn } from './ServiceUtils';
 import { stringToHTML } from './StringsUtils';
 import {
+  certificationTableObject,
   dataProductTableObject,
+  descriptionTableObject,
   domainTableObject,
   ownerTableObject,
   tagTableObject,
+  tierTableObject,
 } from './TableColumn.util';
 import { getUsagePercentile } from './TableUtils';
 
@@ -76,22 +78,7 @@ export const getServiceMainTabColumns = (
       />
     ),
   },
-  {
-    title: t('label.description'),
-    dataIndex: TABLE_COLUMNS_KEYS.DESCRIPTION,
-    key: TABLE_COLUMNS_KEYS.DESCRIPTION,
-    width: 300,
-    render: (description: ServicePageData['description']) =>
-      !isUndefined(description) && description.trim() ? (
-        <RichTextEditorPreviewerNew markdown={description} />
-      ) : (
-        <span className="text-grey-muted">
-          {t('label.no-entity', {
-            entity: t('label.description'),
-          })}
-        </span>
-      ),
-  },
+  ...descriptionTableObject<ServicePageData>({ width: 300 }),
   ...(ServiceCategory.PIPELINE_SERVICES === serviceCategory
     ? [
         {
@@ -112,6 +99,8 @@ export const getServiceMainTabColumns = (
   ...domainTableObject<ServicePageData>(),
   ...dataProductTableObject<ServicePageData>(),
   ...tagTableObject<ServicePageData>(),
+  ...tierTableObject<ServicePageData>(),
+  ...certificationTableObject<ServicePageData>(),
   ...(ServiceCategory.DATABASE_SERVICES === serviceCategory
     ? [
         {
@@ -134,7 +123,7 @@ export const getServiceMainTabColumns = (
 export const callServicePatchAPI = async (
   serviceCategory: ServiceTypes,
   id: string,
-  jsonPatch: any
+  jsonPatch: Operation[]
 ) => {
   switch (serviceCategory) {
     case ServiceCategory.DATABASE_SERVICES:

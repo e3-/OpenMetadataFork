@@ -23,6 +23,8 @@ import es.co.elastic.clients.elasticsearch.core.SearchRequest;
 import es.co.elastic.clients.elasticsearch.core.SearchResponse;
 import es.co.elastic.clients.elasticsearch.core.search.Hit;
 import es.co.elastic.clients.json.JsonData;
+import es.co.elastic.clients.json.jackson.JacksonJsonpMapper;
+import io.micrometer.core.instrument.Timer;
 import java.io.IOException;
 import java.io.StringReader;
 import java.util.HashMap;
@@ -37,14 +39,17 @@ import org.openmetadata.schema.api.lineage.LineageDirection;
 import org.openmetadata.schema.utils.JsonUtils;
 import org.openmetadata.sdk.exception.SearchException;
 import org.openmetadata.service.Entity;
+import org.openmetadata.service.monitoring.RequestLatencyContext;
 
 @Slf4j
 public class EsUtils {
 
   private static final ObjectMapper mapper;
+  private static final JacksonJsonpMapper jsonpMapper;
 
   static {
     mapper = new ObjectMapper();
+    jsonpMapper = new JacksonJsonpMapper(mapper);
   }
 
   public static Map<String, Object> jsonDataToMap(JsonData jsonData) {
@@ -65,7 +70,7 @@ public class EsUtils {
     } catch (JsonProcessingException e) {
       throw new IllegalArgumentException("Invalid JSON input", e);
     }
-    return JsonData.of(docMap);
+    return JsonData.of(docMap, jsonpMapper);
   }
 
   public static String parseJsonQuery(String jsonQuery) throws JsonProcessingException {
@@ -129,7 +134,14 @@ public class EsUtils {
       }
     }
 
-    return client.search(searchRequestBuilder.build(), JsonData.class);
+    Timer.Sample searchTimerSample = RequestLatencyContext.startSearchOperation();
+    try {
+      return client.search(searchRequestBuilder.build(), JsonData.class);
+    } finally {
+      if (searchTimerSample != null) {
+        RequestLatencyContext.endSearchOperation(searchTimerSample);
+      }
+    }
   }
 
   public static Map<String, Object> searchEREntityByKey(
@@ -183,7 +195,15 @@ public class EsUtils {
             null,
             null,
             fieldsToRemove);
-    SearchResponse<JsonData> searchResponse = client.search(searchRequest, JsonData.class);
+    Timer.Sample searchTimerSample = RequestLatencyContext.startSearchOperation();
+    SearchResponse<JsonData> searchResponse;
+    try {
+      searchResponse = client.search(searchRequest, JsonData.class);
+    } finally {
+      if (searchTimerSample != null) {
+        RequestLatencyContext.endSearchOperation(searchTimerSample);
+      }
+    }
 
     for (Hit<JsonData> hit : searchResponse.hits().hits()) {
       if (hit.source() != null) {
@@ -255,6 +275,19 @@ public class EsUtils {
       Pair<String, String> hasToFqnPair,
       List<String> fieldsToRemove)
       throws IOException {
+    return searchEntityByKey(
+        client, direction, indexAlias, keyName, hasToFqnPair, null, fieldsToRemove);
+  }
+
+  public static Map<String, Object> searchEntityByKey(
+      ElasticsearchClient client,
+      LineageDirection direction,
+      String indexAlias,
+      String keyName,
+      Pair<String, String> hasToFqnPair,
+      List<String> fieldsToInclude,
+      List<String> fieldsToRemove)
+      throws IOException {
     Map<String, Object> result =
         searchEntitiesByKey(
             client,
@@ -264,6 +297,7 @@ public class EsUtils {
             Set.of(hasToFqnPair.getLeft()),
             0,
             1,
+            fieldsToInclude,
             fieldsToRemove);
     if (result.size() == 1) {
       return (Map<String, Object>) result.get(hasToFqnPair.getRight());
@@ -285,20 +319,92 @@ public class EsUtils {
       int size,
       List<String> fieldsToRemove)
       throws IOException {
+    return searchEntitiesByKey(
+        client, direction, indexAlias, keyName, keyValues, from, size, null, fieldsToRemove, null);
+  }
+
+  public static Map<String, Object> searchEntitiesByKey(
+      ElasticsearchClient client,
+      LineageDirection direction,
+      String indexAlias,
+      String keyName,
+      Set<String> keyValues,
+      int from,
+      int size,
+      List<String> fieldsToInclude,
+      List<String> fieldsToRemove)
+      throws IOException {
+    return searchEntitiesByKey(
+        client,
+        direction,
+        indexAlias,
+        keyName,
+        keyValues,
+        from,
+        size,
+        fieldsToInclude,
+        fieldsToRemove,
+        null);
+  }
+
+  public static Map<String, Object> searchEntitiesByKey(
+      ElasticsearchClient client,
+      LineageDirection direction,
+      String indexAlias,
+      String keyName,
+      Set<String> keyValues,
+      int from,
+      int size,
+      List<String> fieldsToRemove,
+      String queryFilter)
+      throws IOException {
+    return searchEntitiesByKey(
+        client,
+        direction,
+        indexAlias,
+        keyName,
+        keyValues,
+        from,
+        size,
+        null,
+        fieldsToRemove,
+        queryFilter);
+  }
+
+  public static Map<String, Object> searchEntitiesByKey(
+      ElasticsearchClient client,
+      LineageDirection direction,
+      String indexAlias,
+      String keyName,
+      Set<String> keyValues,
+      int from,
+      int size,
+      List<String> fieldsToInclude,
+      List<String> fieldsToRemove,
+      String queryFilter)
+      throws IOException {
     Map<String, Object> result = new HashMap<>();
     SearchRequest searchRequest =
         getSearchRequest(
             direction,
             indexAlias,
-            null,
+            queryFilter,
             null,
             Map.of(keyName, keyValues),
             from,
             size,
             null,
-            null,
+            fieldsToInclude,
             fieldsToRemove);
-    SearchResponse<JsonData> searchResponse = client.search(searchRequest, JsonData.class);
+    Timer.Sample searchTimerSample = RequestLatencyContext.startSearchOperation();
+    SearchResponse<JsonData> searchResponse;
+    try {
+      searchResponse = client.search(searchRequest, JsonData.class);
+    } finally {
+      if (searchTimerSample != null) {
+        RequestLatencyContext.endSearchOperation(searchTimerSample);
+      }
+    }
 
     for (Hit<JsonData> hit : searchResponse.hits().hits()) {
       if (hit.source() != null) {
@@ -376,7 +482,14 @@ public class EsUtils {
     // Apply query filter
     buildSearchSourceFilter(queryFilter, searchRequestBuilder);
 
-    return client.search(searchRequestBuilder.build(), JsonData.class);
+    Timer.Sample searchTimerSample = RequestLatencyContext.startSearchOperation();
+    try {
+      return client.search(searchRequestBuilder.build(), JsonData.class);
+    } finally {
+      if (searchTimerSample != null) {
+        RequestLatencyContext.endSearchOperation(searchTimerSample);
+      }
+    }
   }
 
   private static Query buildBoolQueriesWithShould(Map<String, Set<String>> keysAndValues) {

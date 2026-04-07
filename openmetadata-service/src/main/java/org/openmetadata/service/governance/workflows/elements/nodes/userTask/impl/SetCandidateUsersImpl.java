@@ -26,12 +26,16 @@ public class SetCandidateUsersImpl implements TaskListener {
           JsonUtils.readOrConvertValue(
               delegateTask.getVariable(assigneesVarNameExpr.getValue(delegateTask).toString()),
               List.class);
+      LOG.debug(
+          "[Process: {}] Setting candidate users for task {}: {}",
+          delegateTask.getProcessInstanceId(),
+          delegateTask.getId(),
+          assignees);
       delegateTask.addCandidateUsers(assignees);
     } catch (Exception exc) {
       LOG.error(
-          String.format(
-              "[%s] Failure: ",
-              getProcessDefinitionKeyFromId(delegateTask.getProcessDefinitionId())),
+          "[{}] Failure: ",
+          getProcessDefinitionKeyFromId(delegateTask.getProcessDefinitionId()),
           exc);
       varHandler.setGlobalVariable(EXCEPTION_VARIABLE, ExceptionUtils.getStackTrace(exc));
       throw new BpmnError(WORKFLOW_RUNTIME_EXCEPTION, exc.getMessage());

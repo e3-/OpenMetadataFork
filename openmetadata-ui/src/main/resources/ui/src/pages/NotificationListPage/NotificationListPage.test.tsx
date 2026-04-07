@@ -18,7 +18,30 @@ import { ROUTES } from '../../constants/constants';
 import { usePermissionProvider } from '../../context/PermissionProvider/PermissionProvider';
 import LimitWrapper from '../../hoc/LimitWrapper';
 import { getAllAlerts } from '../../rest/alertsAPI';
+import { descriptionTableObject } from '../../utils/TableColumn.util';
 import NotificationListPage from './NotificationListPage';
+
+jest.mock('@openmetadata/ui-core-components', () => ({
+  Button: jest
+    .fn()
+    .mockImplementation(({ children, onClick }) => (
+      <button onClick={onClick}>{children}</button>
+    )),
+  ButtonUtility: jest
+    .fn()
+    .mockImplementation(
+      ({ icon, onClick, className, 'data-testid': testId }) => (
+        <button className={className} data-testid={testId} onClick={onClick}>
+          {icon}
+        </button>
+      )
+    ),
+  FeaturedIcon: jest.fn().mockImplementation(({ icon }) => <span>{icon}</span>),
+  Typography: jest
+    .fn()
+    .mockImplementation(({ children }) => <span>{children}</span>),
+  defaultColors: { gray: { 50: '#fafafa' } },
+}));
 
 const MOCK_DATA = [
   {
@@ -187,7 +210,7 @@ describe('Notification Alerts Page Tests', () => {
     expect(alertNameElement).toBeInTheDocument();
   });
 
-  it('Table should render no data', async () => {
+  it('Table should render descriptionTableObject', async () => {
     (getAllAlerts as jest.Mock).mockImplementationOnce(() =>
       Promise.resolve({
         data: [],
@@ -200,9 +223,7 @@ describe('Notification Alerts Page Tests', () => {
       });
     });
 
-    const alertNameElement = await screen.findByText('label.no-entity');
-
-    expect(alertNameElement).toBeInTheDocument();
+    expect(descriptionTableObject).toHaveBeenCalledWith();
   });
 
   it('should call LimitWrapper with resource as eventsubscription', async () => {

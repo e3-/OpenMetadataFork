@@ -16,22 +16,21 @@ import { compare } from 'fast-json-patch';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
-import { ROUTES } from '../../../constants/constants';
 import { usePermissionProvider } from '../../../context/PermissionProvider/PermissionProvider';
 import { ResourceEntity } from '../../../context/PermissionProvider/PermissionProvider.interface';
 import { ERROR_PLACEHOLDER_TYPE, SIZE } from '../../../enums/common.enum';
 import { TabSpecificField } from '../../../enums/entity.enum';
 import { Domain } from '../../../generated/entity/domains/domain';
 import { Operation } from '../../../generated/entity/policies/policy';
-import { withPageLayout } from '../../../hoc/withPageLayout';
 import { useApplicationStore } from '../../../hooks/useApplicationStore';
-import { useDomainStore } from '../../../hooks/useDomainStore';
 import { useFqn } from '../../../hooks/useFqn';
+import { useMarketplaceStore } from '../../../hooks/useMarketplaceStore';
 import {
   addFollower,
   getDomainByName,
   patchDomains,
   removeFollower,
+  updateDomainVotes,
 } from '../../../rest/domainAPI';
 import { getEntityName } from '../../../utils/EntityUtils';
 import { checkPermission } from '../../../utils/PermissionsUtils';
@@ -39,6 +38,8 @@ import { getDomainPath } from '../../../utils/RouterUtils';
 import { showErrorToast } from '../../../utils/ToastUtils';
 import ErrorPlaceHolder from '../../common/ErrorWithPlaceholder/ErrorPlaceHolder';
 import Loader from '../../common/Loader/Loader';
+import { QueryVote } from '../../Database/TableQueries/TableQueries.interface';
+import PageLayoutV1 from '../../PageLayoutV1/PageLayoutV1';
 import '../domain.less';
 import DomainDetails from '../DomainDetails/DomainDetails.component';
 
@@ -46,10 +47,10 @@ const DomainDetailPage = () => {
   const { fqn: domainFqn } = useFqn();
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const { domainBasePath } = useMarketplaceStore();
   const { currentUser } = useApplicationStore();
   const currentUserId = currentUser?.id ?? '';
   const { permissions } = usePermissionProvider();
-  const { updateDomains } = useDomainStore();
   const [isMainContentLoading, setIsMainContentLoading] = useState(false);
   const [activeDomain, setActiveDomain] = useState<Domain>();
   const [isFollowingLoading, setIsFollowingLoading] = useState<boolean>(false);
@@ -76,20 +77,20 @@ const DomainDetailPage = () => {
         const response = await patchDomains(activeDomain.id, jsonPatch);
 
         setActiveDomain(response);
-        updateDomains([response], false);
 
         if (activeDomain?.name !== updatedData.name) {
           navigate(getDomainPath(response.fullyQualifiedName));
         }
       } catch (error) {
         showErrorToast(error as AxiosError);
+
+        throw error as AxiosError;
       }
     }
   };
 
   const handleDomainDelete = () => {
-    // Navigate back to domains listing page after deletion
-    navigate(ROUTES.DOMAIN);
+    navigate(domainBasePath);
   };
 
   const fetchDomainByName = async (domainFqn: string) => {
@@ -104,6 +105,8 @@ const DomainDetailPage = () => {
           TabSpecificField.TAGS,
           TabSpecificField.FOLLOWERS,
           TabSpecificField.EXTENSION,
+          TabSpecificField.VOTES,
+          TabSpecificField.CERTIFICATION,
         ],
       });
       setActiveDomain(data);
@@ -178,18 +181,42 @@ const DomainDetailPage = () => {
     setIsFollowingLoading(false);
   }, [isFollowing, unFollowDomain, followDomain]);
 
+  const handleUpdateVote = useCallback(
+    async (data: QueryVote, id: string) => {
+      try {
+        await updateDomainVotes(id, data);
+        const response = await getDomainByName(domainFqn, {
+          fields: [
+            TabSpecificField.CHILDREN,
+            TabSpecificField.OWNERS,
+            TabSpecificField.PARENT,
+            TabSpecificField.EXPERTS,
+            TabSpecificField.TAGS,
+            TabSpecificField.FOLLOWERS,
+            TabSpecificField.EXTENSION,
+            TabSpecificField.VOTES,
+            TabSpecificField.CERTIFICATION,
+          ],
+        });
+        setActiveDomain(response);
+      } catch (error) {
+        showErrorToast(error as AxiosError);
+      }
+    },
+    [domainFqn]
+  );
+
   useEffect(() => {
     if (domainFqn) {
       fetchDomainByName(domainFqn);
     }
   }, [domainFqn]);
 
-  // If no domain FQN is provided, redirect to domains listing
   useEffect(() => {
     if (!domainFqn) {
-      navigate(ROUTES.DOMAIN);
+      navigate(domainBasePath);
     }
-  }, [domainFqn, navigate]);
+  }, [domainFqn, navigate, domainBasePath]);
 
   if (!(viewBasicDomainPermission || viewAllDomainPermission)) {
     return (
@@ -213,15 +240,18 @@ const DomainDetailPage = () => {
   }
 
   return (
-    <DomainDetails
-      domain={activeDomain}
-      handleFollowingClick={handleFollowingClick}
-      isFollowing={isFollowing}
-      isFollowingLoading={isFollowingLoading}
-      onDelete={handleDomainDelete}
-      onUpdate={handleDomainUpdate}
-    />
+    <PageLayoutV1 pageTitle={getEntityName(activeDomain)}>
+      <DomainDetails
+        domain={activeDomain}
+        handleFollowingClick={handleFollowingClick}
+        isFollowing={isFollowing}
+        isFollowingLoading={isFollowingLoading}
+        onDelete={handleDomainDelete}
+        onUpdate={handleDomainUpdate}
+        onUpdateVote={handleUpdateVote}
+      />
+    </PageLayoutV1>
   );
 };
 
-export default withPageLayout(DomainDetailPage);
+export default DomainDetailPage;

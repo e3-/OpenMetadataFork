@@ -28,6 +28,7 @@ import { DomainSelectableListProps } from './DomainSelectableList.interface';
 const DomainSelectableList = ({
   children,
   disabled,
+  getPopupContainer: getPopupContainerProp,
   hasPermission,
   multiple = false,
   onCancel,
@@ -37,6 +38,7 @@ const DomainSelectableList = ({
   showAllDomains = false,
   wrapInButton = true,
   overlayClassName,
+  isClearable,
 }: DomainSelectableListProps) => {
   const { t } = useTranslation();
   const [popupVisible, setPopupVisible] = useState(false);
@@ -95,20 +97,22 @@ const DomainSelectableList = ({
         destroyTooltipOnHide
         content={
           !disabled && (
-            <FocusTrapWithContainer active={popoverProps?.open || false}>
-              <DomainSelectablTree
-                initialDomains={initialDomains}
-                isMultiple={multiple}
-                showAllDomains={showAllDomains}
-                value={selectedDomainsList as string[]}
-                visible={popupVisible || Boolean(popoverProps?.open)}
-                onCancel={handleCancel}
-                onSubmit={handleUpdate}
-              />
-            </FocusTrapWithContainer>
+            <div data-react-aria-top-layer>
+              <FocusTrapWithContainer active={popoverProps?.open || false}>
+                <DomainSelectablTree
+                  initialDomains={initialDomains}
+                  isClearable={isClearable}
+                  isMultiple={multiple}
+                  showAllDomains={showAllDomains}
+                  value={selectedDomainsList as string[]}
+                  visible={popupVisible || Boolean(popoverProps?.open)}
+                  onCancel={handleCancel}
+                  onSubmit={handleUpdate}
+                />
+              </FocusTrapWithContainer>
+            </div>
           )
         }
-        getPopupContainer={getVisiblePopupContainer}
         open={popupVisible}
         overlayClassName={`domain-select-popover w-400 ${overlayClassName}`}
         placement="bottomRight"
@@ -119,7 +123,8 @@ const DomainSelectableList = ({
             setPopupVisible(visible);
           }
         }}
-        {...popoverProps}>
+        {...popoverProps}
+        getPopupContainer={getPopupContainerProp ?? getVisiblePopupContainer}>
         {children ??
           (!isVersionView && (
             <EditIconButton
@@ -138,6 +143,7 @@ const DomainSelectableList = ({
     );
   }, [
     children,
+    getPopupContainerProp,
     hasPermission,
     handleCancel,
     handleUpdate,
@@ -148,6 +154,7 @@ const DomainSelectableList = ({
     selectedDomainsList,
     selectedDomain,
     isVersionView,
+    isClearable,
   ]);
 
   if (wrapInButton) {

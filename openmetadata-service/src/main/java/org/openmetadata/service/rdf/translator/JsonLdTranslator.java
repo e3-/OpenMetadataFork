@@ -1,7 +1,6 @@
 package org.openmetadata.service.rdf.translator;
 
 import com.apicatalog.jsonld.JsonLd;
-import com.apicatalog.jsonld.JsonLdError;
 import com.apicatalog.jsonld.document.JsonDocument;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -51,7 +50,8 @@ public class JsonLdTranslator {
       "entityRelationship",
       "governance",
       "quality",
-      "operations"
+      "operations",
+      "lineage"
     };
     for (String contextName : contexts) {
       try {
@@ -202,7 +202,7 @@ public class JsonLdTranslator {
     return result;
   }
 
-  public Model toRdf(EntityInterface entity) throws JsonLdError {
+  public Model toRdf(EntityInterface entity) {
     Model model = ModelFactory.createDefaultModel();
 
     model.setNsPrefix("om", "https://open-metadata.org/ontology/");
@@ -246,7 +246,7 @@ public class JsonLdTranslator {
     RdfPropertyMapper propertyMapper = new RdfPropertyMapper(baseUri, objectMapper, contextCache);
     propertyMapper.mapEntityToRdf(entity, entityResource, model);
 
-    LOG.info(
+    LOG.debug(
         "RDF model size for entity {}: {} triples", entity.getFullyQualifiedName(), model.size());
 
     return model;

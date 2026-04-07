@@ -15,6 +15,7 @@ Most of these methods are applying the same logic,
 but assigning specific names helps better follow the
 code.
 """
+
 import re
 from typing import List, Optional
 
@@ -327,6 +328,21 @@ def filter_by_collection(
     return _filter(collection_pattern, collection_name)
 
 
+def filter_by_endpoint(
+    endpoint_pattern: Optional[FilterPattern], endpoint_name: str
+) -> bool:
+    """
+    Return True if the endpoint needs to be filtered, False otherwise
+
+    Include takes precedence over exclude
+
+    :param endpoint_pattern: Model defining endpoint filtering logic
+    :param endpoint_name: endpoint name
+    :return: True for filtering, False otherwise
+    """
+    return _filter(endpoint_pattern, endpoint_name)
+
+
 def filter_by_tag(tag_pattern: Optional[FilterPattern], tag_name: str) -> bool:
     """
     Return True if the models needs to be filtered, False otherwise
@@ -398,3 +414,18 @@ def filter_by_worksheet(
     :return: True for filtering, False otherwise
     """
     return _filter(worksheet_filter_pattern, worksheet_name)
+
+
+def filter_by_server(
+    server_filter_pattern: Optional[FilterPattern], server_name: str
+) -> bool:
+    """
+    Return True if the MCP server needs to be filtered, False otherwise
+
+    Include takes precedence over exclude
+
+    :param server_filter_pattern: Model defining server filtering logic
+    :param server_name: server name
+    :return: True for filtering, False otherwise
+    """
+    return _filter(server_filter_pattern, server_name)

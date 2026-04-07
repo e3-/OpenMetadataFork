@@ -26,6 +26,7 @@ import athenaConnection from '../jsons/connectionSchemas/connections/database/at
 import azureSQLConnection from '../jsons/connectionSchemas/connections/database/azureSQLConnection.json';
 import bigQueryConnection from '../jsons/connectionSchemas/connections/database/bigQueryConnection.json';
 import bigTableConnection from '../jsons/connectionSchemas/connections/database/bigTableConnection.json';
+import burstiqConnection from '../jsons/connectionSchemas/connections/database/burstIQConnection.json';
 import cassandraConnection from '../jsons/connectionSchemas/connections/database/cassandraConnection.json';
 import clickhouseConnection from '../jsons/connectionSchemas/connections/database/clickhouseConnection.json';
 import cockroachConnection from '../jsons/connectionSchemas/connections/database/cockroachConnection.json';
@@ -43,7 +44,6 @@ import exasolConnection from '../jsons/connectionSchemas/connections/database/ex
 import glueConnection from '../jsons/connectionSchemas/connections/database/glueConnection.json';
 import greenplumConnection from '../jsons/connectionSchemas/connections/database/greenplumConnection.json';
 import hiveConnection from '../jsons/connectionSchemas/connections/database/hiveConnection.json';
-import icebergConnection from '../jsons/connectionSchemas/connections/database/icebergConnection.json';
 import impalaConnection from '../jsons/connectionSchemas/connections/database/impalaConnection.json';
 import mariaDBConnection from '../jsons/connectionSchemas/connections/database/mariaDBConnection.json';
 import mongoDBConnection from '../jsons/connectionSchemas/connections/database/mongoDBConnection.json';
@@ -61,6 +61,7 @@ import sasConnection from '../jsons/connectionSchemas/connections/database/sasCo
 import singleStoreConnection from '../jsons/connectionSchemas/connections/database/singleStoreConnection.json';
 import snowflakeConnection from '../jsons/connectionSchemas/connections/database/snowflakeConnection.json';
 import sqliteConnection from '../jsons/connectionSchemas/connections/database/sqliteConnection.json';
+import starrocksConnection from '../jsons/connectionSchemas/connections/database/starrocksConnection.json';
 import synapseConnection from '../jsons/connectionSchemas/connections/database/synapseConnection.json';
 import teradataConnection from '../jsons/connectionSchemas/connections/database/teradataConnection.json';
 import timescaleConnection from '../jsons/connectionSchemas/connections/database/timescaleConnection.json';
@@ -127,6 +128,11 @@ export const getDatabaseConfig = (type: DatabaseServiceType) => {
     }
     case DatabaseServiceType.Doris: {
       schema = dorisConnection;
+
+      break;
+    }
+    case DatabaseServiceType.StarRocks: {
+      schema = starrocksConnection;
 
       break;
     }
@@ -286,11 +292,6 @@ export const getDatabaseConfig = (type: DatabaseServiceType) => {
 
       break;
     }
-    case DatabaseServiceType.Iceberg: {
-      schema = icebergConnection;
-
-      break;
-    }
     case DatabaseServiceType.Teradata: {
       schema = teradataConnection;
 
@@ -298,6 +299,11 @@ export const getDatabaseConfig = (type: DatabaseServiceType) => {
     }
     case DatabaseServiceType.Timescale: {
       schema = timescaleConnection;
+
+      break;
+    }
+    case DatabaseServiceType.BurstIQ: {
+      schema = burstiqConnection;
 
       break;
     }

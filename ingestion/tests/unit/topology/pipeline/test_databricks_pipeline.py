@@ -42,7 +42,7 @@ from metadata.generated.schema.type.entityLineage import (
     LineageDetails,
 )
 from metadata.generated.schema.type.entityReference import EntityReference
-from metadata.ingestion.models.pipeline_status import OMetaPipelineStatus
+from metadata.ingestion.models.pipeline_status import OMetaBulkPipelineStatus
 from metadata.ingestion.ometa.ometa_api import OpenMetadata
 from metadata.ingestion.source.pipeline.databrickspipeline.metadata import (
     DatabrickspipelineSource,
@@ -82,7 +82,9 @@ mock_databricks_config = {
                 },
             }
         },
-        "sourceConfig": {"config": {"type": "PipelineMetadata"}},
+        "sourceConfig": {
+            "config": {"type": "PipelineMetadata", "statusLookbackDays": 99999}
+        },
     },
     "sink": {"type": "metadata-rest", "config": {}},
     "workflowConfig": {
@@ -174,35 +176,37 @@ EXPECTED_CREATED_PIPELINES = CreatePipelineRequest(
 )
 
 EXPECTED_PIPELINE_STATUS = [
-    OMetaPipelineStatus(
+    OMetaBulkPipelineStatus(
         pipeline_fqn="databricks_pipeline_test.11223344",
-        pipeline_status=PipelineStatus(
-            timestamp=1625060460483,
-            executionStatus="Successful",
-            taskStatus=[
-                TaskStatus(
-                    name="Orders_Ingest",
-                    executionStatus="Successful",
-                    startTime=1625060460483,
-                    endTime=1625060863413,
-                    logLink="https://my-workspace.cloud.databricks.com/#job/11223344/run/123",
-                ),
-                TaskStatus(
-                    name="Match",
-                    executionStatus="Successful",
-                    startTime=1625060460483,
-                    endTime=1625060863413,
-                    logLink="https://my-workspace.cloud.databricks.com/#job/11223344/run/123",
-                ),
-                TaskStatus(
-                    name="Sessionize",
-                    executionStatus="Successful",
-                    startTime=1625060460483,
-                    endTime=1625060863413,
-                    logLink="https://my-workspace.cloud.databricks.com/#job/11223344/run/123",
-                ),
-            ],
-        ),
+        pipeline_statuses=[
+            PipelineStatus(
+                timestamp=1625060460483,
+                executionStatus="Successful",
+                taskStatus=[
+                    TaskStatus(
+                        name="Orders_Ingest",
+                        executionStatus="Successful",
+                        startTime=1625060460483,
+                        endTime=1625060863413,
+                        logLink="https://my-workspace.cloud.databricks.com/#job/11223344/run/123",
+                    ),
+                    TaskStatus(
+                        name="Match",
+                        executionStatus="Successful",
+                        startTime=1625060460483,
+                        endTime=1625060863413,
+                        logLink="https://my-workspace.cloud.databricks.com/#job/11223344/run/123",
+                    ),
+                    TaskStatus(
+                        name="Sessionize",
+                        executionStatus="Successful",
+                        startTime=1625060460483,
+                        endTime=1625060863413,
+                        logLink="https://my-workspace.cloud.databricks.com/#job/11223344/run/123",
+                    ),
+                ],
+            ),
+        ],
     ),
 ]
 
@@ -440,3 +444,156 @@ class DatabricksPipelineTests(TestCase):
                         lineage_details.edge.lineageDetails.columnsLineage,
                         [],
                     )
+
+    def test_databricks_dlt_pipeline_lineage(self):
+        dlt_pipeline_id = "115f1983-1e70-46a9-b7fb-dd0150179561"
+        self.databricks.context.get().__dict__["pipeline"] = dlt_pipeline_id
+        self.databricks.context.get().__dict__[
+            "pipeline_service"
+        ] = "databricks_pipeline_test"
+        mock_pipeline = Pipeline(
+            id=uuid.uuid4(),
+            name=dlt_pipeline_id,
+            fullyQualifiedName=f"databricks_pipeline_test.{dlt_pipeline_id}",
+            service=EntityReference(id=uuid.uuid4(), type="pipelineService"),
+        )
+
+        # Create source and target tables
+        mock_source_table = Table(
+            id="cced5342-12e8-45fb-b50a-918529d43ed1",
+            name="table_1",
+            fullyQualifiedName="local_table.dev.table_1",
+            database=EntityReference(id=uuid.uuid4(), type="database"),
+            columns=[
+                Column(
+                    name="column_1",
+                    fullyQualifiedName="local_table.dev.table_1.column_1",
+                    dataType="VARCHAR",
+                )
+            ],
+            databaseSchema=EntityReference(id=uuid.uuid4(), type="databaseSchema"),
+        )
+
+        mock_target_table = Table(
+            id="6f5ad342-12e8-45fb-b50a-918529d43ed1",
+            name="table_2",
+            fullyQualifiedName="local_table.dev.table_2",
+            database=EntityReference(id=uuid.uuid4(), type="database"),
+            columns=[
+                Column(
+                    name="column_2",
+                    fullyQualifiedName="local_table.dev.table_2.column_2",
+                    dataType="VARCHAR",
+                )
+            ],
+            databaseSchema=EntityReference(id=uuid.uuid4(), type="databaseSchema"),
+        )
+
+        dlt_pipeline_details = DataBrickPipelineDetails(
+            pipeline_id=dlt_pipeline_id,
+            name="test-dlt-pipeline",
+        )
+
+        with patch.object(self.databricks.metadata, "get_by_name") as mock_get_by_name:
+
+            def get_by_name_side_effect(entity, fqn):
+                if entity == Pipeline:
+                    if fqn == f"databricks_pipeline_test.{dlt_pipeline_id}":
+                        return mock_pipeline
+                elif entity == Table:
+                    if "table_1" in fqn:
+                        return mock_source_table
+                    elif "table_2" in fqn:
+                        return mock_target_table
+                return None
+
+            mock_get_by_name.side_effect = get_by_name_side_effect
+
+            with patch.object(
+                self.databricks.client, "get_table_lineage"
+            ) as mock_get_table_lineage:
+                mock_get_table_lineage.return_value = [
+                    {
+                        "source_table_full_name": "local_table.dev.table_1",
+                        "target_table_full_name": "local_table.dev.table_2",
+                    }
+                ]
+                with patch.object(
+                    self.databricks.client, "get_column_lineage"
+                ) as mock_get_column_lineage:
+                    mock_get_column_lineage.return_value = [
+                        ("column_1", "column_2"),
+                        ("column_3", "column_4"),
+                    ]
+                    with patch.object(
+                        self.databricks.client, "get_pipeline_details"
+                    ) as mock_get_pipeline_details:
+                        mock_get_pipeline_details.return_value = None
+
+                        lineage_details = list(
+                            self.databricks.yield_pipeline_lineage_details(
+                                dlt_pipeline_details
+                            )
+                        )[0].right
+                        self.assertEqual(
+                            lineage_details.edge.fromEntity.id,
+                            EXPECTED_PIPELINE_LINEAGE.edge.fromEntity.id,
+                        )
+                        self.assertEqual(
+                            lineage_details.edge.toEntity.id,
+                            EXPECTED_PIPELINE_LINEAGE.edge.toEntity.id,
+                        )
+                        self.assertEqual(
+                            lineage_details.edge.lineageDetails.columnsLineage,
+                            EXPECTED_PIPELINE_LINEAGE.edge.lineageDetails.columnsLineage,
+                        )
+
+        with patch.object(self.databricks.metadata, "get_by_name") as mock_get_by_name:
+
+            def get_by_name_side_effect(entity, fqn):
+                if entity == Pipeline:
+                    if fqn == f"databricks_pipeline_test.{dlt_pipeline_id}":
+                        return mock_pipeline
+                elif entity == Table:
+                    if "table_1" in fqn:
+                        return mock_source_table
+                    elif "table_2" in fqn:
+                        return mock_target_table
+                return None
+
+            mock_get_by_name.side_effect = get_by_name_side_effect
+
+            with patch.object(
+                self.databricks.client, "get_table_lineage"
+            ) as mock_get_table_lineage:
+                mock_get_table_lineage.return_value = [
+                    {
+                        "source_table_full_name": "local_table.dev.table_1",
+                        "target_table_full_name": "local_table.dev.table_2",
+                    }
+                ]
+                with patch.object(
+                    self.databricks.client, "get_column_lineage"
+                ) as mock_get_column_lineage:
+                    mock_get_column_lineage.return_value = []  # No column lineage
+                    with patch.object(
+                        self.databricks.client, "get_pipeline_details"
+                    ) as mock_get_pipeline_details:
+                        mock_get_pipeline_details.return_value = None
+                        lineage_details = list(
+                            self.databricks.yield_pipeline_lineage_details(
+                                dlt_pipeline_details
+                            )
+                        )[0].right
+                        self.assertEqual(
+                            lineage_details.edge.fromEntity.id,
+                            EXPECTED_PIPELINE_LINEAGE.edge.fromEntity.id,
+                        )
+                        self.assertEqual(
+                            lineage_details.edge.toEntity.id,
+                            EXPECTED_PIPELINE_LINEAGE.edge.toEntity.id,
+                        )
+                        self.assertEqual(
+                            lineage_details.edge.lineageDetails.columnsLineage,
+                            [],
+                        )

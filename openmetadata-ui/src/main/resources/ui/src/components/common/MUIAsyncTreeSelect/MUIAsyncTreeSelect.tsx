@@ -47,6 +47,7 @@ const MUIAsyncTreeSelect: FC<MUIAsyncTreeSelectProps> = ({
   fullWidth = true,
   size = 'small',
   autoFocus = false,
+  'data-testid': dataTestId,
 
   // Tree select props
   multiple = false,
@@ -110,6 +111,14 @@ const MUIAsyncTreeSelect: FC<MUIAsyncTreeSelectProps> = ({
   );
 
   // Tree state management
+  const computedDefaultSelected = useMemo(() => {
+    if (!value) {
+      return defaultSelected;
+    }
+
+    return Array.isArray(value) ? value.map((v) => v.id) : [value.id];
+  }, [value, defaultSelected]);
+
   const {
     treeData,
     loading,
@@ -136,11 +145,7 @@ const MUIAsyncTreeSelect: FC<MUIAsyncTreeSelectProps> = ({
     lazyLoad,
     enableVirtualization,
     defaultExpanded,
-    defaultSelected: value
-      ? Array.isArray(value)
-        ? value.map((v) => v.id)
-        : [value.id]
-      : defaultSelected,
+    defaultSelected: computedDefaultSelected,
     fetchData,
     onSelectionChange: onChange,
     onNodeExpand,
@@ -225,9 +230,9 @@ const MUIAsyncTreeSelect: FC<MUIAsyncTreeSelectProps> = ({
 
   // Handle node selection needs to be defined before keyboard navigation
   const handleNodeClick = useCallback(
-    (node: TreeNode) => {
+    (node: TreeNode, parentNode?: TreeNode) => {
       if (!disabled && node.allowSelection !== false) {
-        toggleNodeSelection(node);
+        toggleNodeSelection(node, parentNode);
         maintainFocus();
         // In single-select mode, clear search after selection to show all nodes again
         if (!multiple) {
@@ -335,10 +340,12 @@ const MUIAsyncTreeSelect: FC<MUIAsyncTreeSelectProps> = ({
       } else if (multiple && Array.isArray(newValue)) {
         // Handle removal of specific items when chips are deleted
         const currentIds = selectedData.map((n) => n.id);
-        const newIds = newValue.map((v) => (typeof v === 'string' ? v : v.id));
+        const newIds = new Set(
+          newValue.map((v) => (typeof v === 'string' ? v : v.id))
+        );
 
         // Find removed items
-        const removedIds = currentIds.filter((id) => !newIds.includes(id));
+        const removedIds = currentIds.filter((id) => !newIds.has(id));
         removedIds.forEach((id) => {
           const node = selectedData.find((n) => n.id === id);
           if (node) {
@@ -364,7 +371,7 @@ const MUIAsyncTreeSelect: FC<MUIAsyncTreeSelectProps> = ({
     if (open && treeData.length > 0) {
       const visibleNodes = getVisibleNodes();
       // Set focus on first item if no focus or current focus is not visible
-      if (!focusedItemId || !visibleNodes.find((n) => n.id === focusedItemId)) {
+      if (!focusedItemId || !visibleNodes.some((n) => n.id === focusedItemId)) {
         if (visibleNodes.length > 0) {
           setFocusedItemId(visibleNodes[0].id);
           // Keep focus on input
@@ -416,7 +423,7 @@ const MUIAsyncTreeSelect: FC<MUIAsyncTreeSelectProps> = ({
 
   // Render tree nodes recursively
   const renderTreeNodes = useCallback(
-    (nodes: TreeNode[], depth = 0): JSX.Element[] => {
+    (nodes: TreeNode[], depth = 0, parentNode?: TreeNode): JSX.Element[] => {
       return nodes
         .filter((node) => isNodeVisible(node.id))
         .map((node) => {
@@ -434,8 +441,11 @@ const MUIAsyncTreeSelect: FC<MUIAsyncTreeSelectProps> = ({
               key={node.id}
               multiple={multiple}
               node={node}
+              parentNode={parentNode}
               renderChildren={() =>
-                node.children ? renderTreeNodes(node.children, depth + 1) : null
+                node.children
+                  ? renderTreeNodes(node.children, depth + 1, node)
+                  : null
               }
               showCheckbox={showCheckbox}
               showIcon={showIcon}
@@ -520,14 +530,12 @@ const MUIAsyncTreeSelect: FC<MUIAsyncTreeSelectProps> = ({
   ]);
 
   // Calculate if has clearable value
-  const hasClearableValue = multiple
-    ? selectedOptions.length > 0
-    : selectedOptions.length > 0;
 
   return (
     <Box ref={anchorRef} sx={{ width: fullWidth ? '100%' : 'auto' }}>
       <TreeSearchInput
         autoFocus={autoFocus}
+        data-testid={dataTestId}
         disabled={disabled}
         error={error}
         fullWidth={fullWidth}
@@ -535,7 +543,7 @@ const MUIAsyncTreeSelect: FC<MUIAsyncTreeSelectProps> = ({
         getInputProps={getInputProps}
         getRootProps={getRootProps}
         getTagProps={getTagProps}
-        hasClearableValue={hasClearableValue}
+        hasClearableValue={selectedOptions.length > 0}
         helperText={helperText}
         inputRef={inputRef}
         label={label}

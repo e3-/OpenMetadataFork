@@ -1,11 +1,14 @@
 package org.openmetadata.service.jdbi3;
 
+import static org.openmetadata.common.utils.CommonUtil.listOrEmpty;
 import static org.openmetadata.common.utils.CommonUtil.nullOrEmpty;
 import static org.openmetadata.schema.type.EventType.ENTITY_CREATED;
 import static org.openmetadata.schema.type.EventType.ENTITY_DELETED;
 import static org.openmetadata.schema.type.EventType.ENTITY_UPDATED;
 import static org.openmetadata.service.apps.bundles.insights.DataInsightsApp.getDataStreamName;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.google.common.annotations.VisibleForTesting;
 import com.unboundid.ldap.sdk.LDAPConnection;
 import com.unboundid.ldap.sdk.LDAPConnectionOptions;
 import com.unboundid.ldap.sdk.SearchResult;
@@ -17,10 +20,12 @@ import jakarta.ws.rs.core.Response;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
 import org.jdbi.v3.sqlobject.transaction.Transaction;
@@ -31,6 +36,7 @@ import org.openmetadata.schema.api.configuration.OpenMetadataBaseUrlConfiguratio
 import org.openmetadata.schema.api.search.SearchSettings;
 import org.openmetadata.schema.api.security.AuthenticationConfiguration;
 import org.openmetadata.schema.api.security.AuthorizerConfiguration;
+import org.openmetadata.schema.api.security.ClientType;
 import org.openmetadata.schema.auth.LdapConfiguration;
 import org.openmetadata.schema.configuration.AssetCertificationSettings;
 import org.openmetadata.schema.configuration.ExecutorConfiguration;
@@ -43,7 +49,10 @@ import org.openmetadata.schema.entity.services.ingestionPipelines.PipelineServic
 import org.openmetadata.schema.security.client.OidcClientConfig;
 import org.openmetadata.schema.security.client.OpenMetadataJWTClientConfig;
 import org.openmetadata.schema.security.scim.ScimConfiguration;
+import org.openmetadata.schema.service.configuration.elasticsearch.ElasticSearchConfiguration;
+import org.openmetadata.schema.service.configuration.elasticsearch.NaturalLanguageSearchConfiguration;
 import org.openmetadata.schema.service.configuration.slackApp.SlackAppConfiguration;
+import org.openmetadata.schema.services.connections.metadata.AuthProvider;
 import org.openmetadata.schema.services.connections.metadata.OpenMetadataConnection;
 import org.openmetadata.schema.settings.Settings;
 import org.openmetadata.schema.settings.SettingsType;
@@ -68,18 +77,21 @@ import org.openmetadata.service.logstorage.LogStorageInterface;
 import org.openmetadata.service.migration.MigrationValidationClient;
 import org.openmetadata.service.resources.settings.SettingsCache;
 import org.openmetadata.service.search.SearchRepository;
+import org.openmetadata.service.search.vector.client.EmbeddingClient;
 import org.openmetadata.service.secrets.SecretsManager;
 import org.openmetadata.service.secrets.SecretsManagerFactory;
 import org.openmetadata.service.secrets.masker.PasswordEntityMasker;
 import org.openmetadata.service.security.AuthenticationCodeFlowHandler;
 import org.openmetadata.service.security.Authorizer;
 import org.openmetadata.service.security.JwtFilter;
+import org.openmetadata.service.security.SecurityUtil;
 import org.openmetadata.service.security.auth.LoginAttemptCache;
 import org.openmetadata.service.security.auth.validator.Auth0Validator;
 import org.openmetadata.service.security.auth.validator.AzureAuthValidator;
 import org.openmetadata.service.security.auth.validator.CognitoAuthValidator;
 import org.openmetadata.service.security.auth.validator.CustomOidcValidator;
 import org.openmetadata.service.security.auth.validator.GoogleAuthValidator;
+import org.openmetadata.service.security.auth.validator.OidcDiscoveryValidator;
 import org.openmetadata.service.security.auth.validator.OktaAuthValidator;
 import org.openmetadata.service.security.auth.validator.SamlValidator;
 import org.openmetadata.service.util.EntityUtil;
@@ -92,7 +104,7 @@ import org.openmetadata.service.util.ValidationErrorBuilder.FieldPaths;
 @Slf4j
 @Repository
 public class SystemRepository {
-  private static final String FAILED_TO_UPDATE_SETTINGS = "Failed to Update Settings";
+  private static final String FAILED_TO_UPDATE_SETTINGS = "Failed to Update Settings {}";
   public static final String INTERNAL_SERVER_ERROR_WITH_REASON = "Internal Server Error. Reason :";
   private final SystemDAO dao;
   private final MigrationValidationClient migrationValidationClient;
@@ -132,7 +144,7 @@ public class SystemRepository {
     try {
       settingsList = dao.getAllConfig();
     } catch (Exception ex) {
-      LOG.error("Error while trying fetch all Settings " + ex.getMessage());
+      LOG.error("Error while trying fetch all Settings {}", ex.getMessage());
     }
     int count = 0;
     if (settingsList != null) {
@@ -154,6 +166,17 @@ public class SystemRepository {
           emailConfig.setPassword(PasswordEntityMasker.PASSWORD_MASK);
         }
         fetchedSettings.setConfigValue(emailConfig);
+      }
+
+      // Apply LDAP default values to prevent JSON PATCH errors when updating fields that were
+      // previously null
+      if (fetchedSettings.getConfigType() == SettingsType.AUTHENTICATION_CONFIGURATION) {
+        AuthenticationConfiguration authConfig =
+            (AuthenticationConfiguration) fetchedSettings.getConfigValue();
+        if (authConfig != null && authConfig.getLdapConfiguration() != null) {
+          ensureLdapConfigDefaultValues(authConfig.getLdapConfiguration());
+          fetchedSettings.setConfigValue(authConfig);
+        }
       }
 
       return fetchedSettings;
@@ -211,7 +234,7 @@ public class SystemRepository {
       setting.setConfigValue(emailConfig);
       return setting;
     } catch (Exception ex) {
-      LOG.error("Error while trying fetch EMAIL Settings " + ex.getMessage());
+      LOG.error("Error while trying fetch EMAIL Settings {}", ex.getMessage());
     }
     return null;
   }
@@ -240,7 +263,7 @@ public class SystemRepository {
       setting.setConfigValue(slackAppConfiguration);
       return setting;
     } catch (Exception ex) {
-      LOG.error("Error while trying fetch Slack Settings " + ex.getMessage());
+      LOG.error("Error while trying fetch Slack Settings {}", ex.getMessage());
     }
     return null;
   }
@@ -266,7 +289,7 @@ public class SystemRepository {
     try {
       updateSetting(setting);
     } catch (Exception ex) {
-      LOG.error(FAILED_TO_UPDATE_SETTINGS + ex.getMessage());
+      LOG.error(FAILED_TO_UPDATE_SETTINGS, ex.getMessage());
       return Response.status(500, INTERNAL_SERVER_ERROR_WITH_REASON + ex.getMessage()).build();
     }
     if (oldValue == null) {
@@ -281,7 +304,7 @@ public class SystemRepository {
     try {
       updateSetting(setting);
     } catch (Exception ex) {
-      LOG.error(FAILED_TO_UPDATE_SETTINGS + ex.getMessage());
+      LOG.error(FAILED_TO_UPDATE_SETTINGS, ex.getMessage());
       return Response.status(500, INTERNAL_SERVER_ERROR_WITH_REASON + ex.getMessage()).build();
     }
     return (new RestUtil.PutResponse<>(Response.Status.CREATED, setting, ENTITY_CREATED))
@@ -307,7 +330,7 @@ public class SystemRepository {
     try {
       updateSetting(original);
     } catch (Exception ex) {
-      LOG.error(FAILED_TO_UPDATE_SETTINGS + ex.getMessage());
+      LOG.error(FAILED_TO_UPDATE_SETTINGS, ex.getMessage());
       return Response.status(500, INTERNAL_SERVER_ERROR_WITH_REASON + ex.getMessage()).build();
     }
     return (new RestUtil.PutResponse<>(Response.Status.OK, original, ENTITY_UPDATED)).toResponse();
@@ -391,7 +414,7 @@ public class SystemRepository {
       setting.setConfigValue(slackBotConfiguration);
       return setting;
     } catch (Exception ex) {
-      LOG.error("Error while trying fetch Slack bot Settings " + ex.getMessage());
+      LOG.error("Error while trying fetch Slack bot Settings {}", ex.getMessage());
     }
     return null;
   }
@@ -404,7 +427,7 @@ public class SystemRepository {
       setting.setConfigValue(slackInstallerConfiguration);
       return setting;
     } catch (Exception ex) {
-      LOG.error("Error while trying to fetch slack installer setting " + ex.getMessage());
+      LOG.error("Error while trying to fetch slack installer setting {}", ex.getMessage());
     }
     return null;
   }
@@ -417,7 +440,7 @@ public class SystemRepository {
       setting.setConfigValue(slackStateConfiguration);
       return setting;
     } catch (Exception ex) {
-      LOG.error("Error while trying to fetch slack state setting " + ex.getMessage());
+      LOG.error("Error while trying to fetch slack state setting {}", ex.getMessage());
     }
     return null;
   }
@@ -525,7 +548,230 @@ public class SystemRepository {
       validation.setLogStorage(logStorageValidation);
     }
 
+    if (Entity.getSearchRepository().isVectorEmbeddingEnabled()) {
+      validation.setAdditionalProperty(
+          "Semantic Search", getEmbeddingsValidation(applicationConfig));
+    }
+
+    addExtraValidations(applicationConfig, validation);
+
     return validation;
+  }
+
+  public void addExtraValidations(
+      OpenMetadataApplicationConfig applicationConfig, ValidationResponse validation) {}
+
+  @VisibleForTesting
+  StepValidation getEmbeddingsValidation(OpenMetadataApplicationConfig applicationConfig) {
+    StepValidation embeddingsValidation = new StepValidation();
+    String description = "Embeddings are used to allow Semantic Search";
+    SearchRepository searchRepository = Entity.getSearchRepository();
+
+    if (searchRepository.getSearchType() == ElasticSearchConfiguration.SearchType.ELASTICSEARCH) {
+      return embeddingsValidation
+          .withDescription(description)
+          .withMessage(
+              "Elasticsearch is not supported for Semantic Search embeddings. Please use OpenSearch.")
+          .withPassed(false);
+    }
+
+    String configMessage = getEmbeddingConfigurationMessage(applicationConfig);
+
+    if (searchRepository.getVectorIndexService() == null) {
+      return retryInitAndReportError(
+          searchRepository, embeddingsValidation, description, configMessage);
+    }
+
+    try {
+      StepValidation embeddingResult =
+          validateEmbeddingGeneration(
+              searchRepository.getEmbeddingClient(),
+              embeddingsValidation,
+              description,
+              configMessage);
+
+      if (Boolean.FALSE.equals(embeddingResult.getPassed())) {
+        return embeddingResult;
+      }
+
+      return validateHybridSearchPipeline(
+          searchRepository, embeddingResult, description, configMessage);
+    } catch (Exception e) {
+      LOG.error("Error during embedding generation validation", e);
+      return embeddingsValidation
+          .withDescription(description)
+          .withMessage("Embedding generation failed: " + e.getMessage() + ". " + configMessage)
+          .withPassed(false);
+    }
+  }
+
+  private StepValidation retryInitAndReportError(
+      SearchRepository searchRepository,
+      StepValidation embeddingsValidation,
+      String description,
+      String configMessage) {
+    searchRepository.initializeVectorSearchService();
+
+    if (searchRepository.getVectorIndexService() != null) {
+      try {
+        StepValidation embeddingResult =
+            validateEmbeddingGeneration(
+                searchRepository.getEmbeddingClient(),
+                embeddingsValidation,
+                description,
+                configMessage);
+        if (Boolean.FALSE.equals(embeddingResult.getPassed())) {
+          return embeddingResult;
+        }
+        return validateHybridSearchPipeline(
+            searchRepository, embeddingResult, description, configMessage);
+      } catch (Exception e) {
+        LOG.error("Error during embedding generation validation after retry", e);
+        return embeddingsValidation
+            .withDescription(description)
+            .withMessage("Embedding generation failed: " + e.getMessage() + ". " + configMessage)
+            .withPassed(false);
+      }
+    }
+
+    String initError = searchRepository.getVectorServiceInitError();
+    String errorSuffix = initError != null ? " Error: " + initError + "." : "";
+    if (searchRepository.getEmbeddingClient() == null) {
+      return embeddingsValidation
+          .withDescription(description)
+          .withMessage(
+              "Embedding client could not be initialized."
+                  + errorSuffix
+                  + " Check the embedding provider configuration. "
+                  + configMessage)
+          .withPassed(false);
+    }
+
+    return embeddingsValidation
+        .withDescription(description)
+        .withMessage(
+            "Vector search service could not be initialized. "
+                + "The embedding client is configured but the OpenSearch vector service failed to start."
+                + errorSuffix
+                + " "
+                + configMessage)
+        .withPassed(false);
+  }
+
+  private StepValidation validateHybridSearchPipeline(
+      SearchRepository searchRepository,
+      StepValidation embeddingsValidation,
+      String description,
+      String configMessage) {
+    Optional<String> pipelineError = searchRepository.checkHybridSearchPipeline();
+    if (pipelineError.isPresent()) {
+      return embeddingsValidation
+          .withDescription(description)
+          .withMessage(
+              "Embeddings are working but the hybrid search pipeline check failed: "
+                  + pipelineError.get()
+                  + " "
+                  + configMessage)
+          .withPassed(false);
+    }
+
+    return embeddingsValidation
+        .withDescription(description)
+        .withMessage(
+            String.format(
+                "Embeddings and hybrid search pipeline are working correctly. %s", configMessage))
+        .withPassed(true);
+  }
+
+  private StepValidation validateEmbeddingGeneration(
+      EmbeddingClient embeddingClient,
+      StepValidation embeddingsValidation,
+      String description,
+      String configMessage) {
+    String testText = "OpenMetadata embedding validation test";
+    float[] embedding = embeddingClient.embed(testText);
+
+    if (embedding == null) {
+      return embeddingsValidation
+          .withDescription(description)
+          .withMessage("Embedding generation returned null. " + configMessage)
+          .withPassed(false);
+    }
+
+    int expectedDimension = embeddingClient.getDimension();
+    if (embedding.length != expectedDimension) {
+      return embeddingsValidation
+          .withDescription(description)
+          .withMessage(
+              String.format(
+                  "Embedding dimension mismatch: expected %d, got %d. %s",
+                  expectedDimension, embedding.length, configMessage))
+          .withPassed(false);
+    }
+
+    boolean allZeros = true;
+    for (float value : embedding) {
+      if (value != 0.0f) {
+        allZeros = false;
+        break;
+      }
+    }
+    if (allZeros) {
+      return embeddingsValidation
+          .withDescription(description)
+          .withMessage("Embedding generation returned all zeros. " + configMessage)
+          .withPassed(false);
+    }
+
+    return embeddingsValidation
+        .withDescription(description)
+        .withMessage(String.format("Embeddings are working correctly. %s", configMessage))
+        .withPassed(true);
+  }
+
+  private String getEmbeddingConfigurationMessage(OpenMetadataApplicationConfig applicationConfig) {
+    try {
+      NaturalLanguageSearchConfiguration nlpConfig =
+          applicationConfig.getElasticSearchConfiguration().getNaturalLanguageSearch();
+      String provider = nlpConfig.getEmbeddingProvider();
+      if (nullOrEmpty(provider)) {
+        return "Required configuration: embeddingProvider";
+      }
+
+      return switch (provider.toLowerCase()) {
+        case "djl" -> String.format(
+            "DJL configuration: embeddingModel: %s", nlpConfig.getDjl().getEmbeddingModel());
+        case "bedrock" -> String.format(
+            "Bedrock configuration: region: %s, embeddingModelId: %s, embeddingDimension %s",
+            nlpConfig.getBedrock().getAwsConfig() != null
+                ? nlpConfig.getBedrock().getAwsConfig().getRegion()
+                : "not configured",
+            nlpConfig.getBedrock().getEmbeddingModelId(),
+            nlpConfig.getBedrock().getEmbeddingDimension());
+        case "openai" -> {
+          String openaiEndpoint =
+              nullOrEmpty(nlpConfig.getOpenai().getEndpoint())
+                  ? "api.openai.com"
+                  : nlpConfig.getOpenai().getEndpoint();
+          String deploymentInfo =
+              nullOrEmpty(nlpConfig.getOpenai().getDeploymentName())
+                  ? ""
+                  : String.format(
+                      ", deploymentName: %s", nlpConfig.getOpenai().getDeploymentName());
+          yield String.format(
+              "OpenAI configuration: endpoint: %s, embeddingModelId: %s, embeddingDimension: %s%s",
+              openaiEndpoint,
+              nlpConfig.getOpenai().getEmbeddingModelId(),
+              nlpConfig.getOpenai().getEmbeddingDimension(),
+              deploymentInfo);
+        }
+        default -> String.format(
+            "Unknown provider '%s'. Supported providers: djl, bedrock, openai", provider);
+      };
+    } catch (Exception e) {
+      LOG.error("Error getting embedding configuration", e);
+      return "Unable to determine embedding configuration";
+    }
   }
 
   private StepValidation getDatabaseValidation(OpenMetadataApplicationConfig applicationConfig) {
@@ -546,18 +792,21 @@ public class SystemRepository {
 
   private StepValidation getSearchValidation(OpenMetadataApplicationConfig applicationConfig) {
     SearchRepository searchRepository = Entity.getSearchRepository();
-    if (Boolean.TRUE.equals(searchRepository.getSearchClient().isClientAvailable())
-        && searchRepository
-            .getSearchClient()
-            .indexExists(Entity.getSearchRepository().getIndexOrAliasName(INDEX_NAME))) {
+    if (searchRepository.getSearchClient().isClientAvailable()) {
       if (validateDataInsights()) {
+        List<String> missingIndexes = findMissingIndexes(searchRepository);
+        String message =
+            String.format(
+                "Connected to %s", applicationConfig.getElasticSearchConfiguration().getHost());
+        if (!missingIndexes.isEmpty()) {
+          message +=
+              String.format(
+                  ". WARNING: %d missing indexes: %s", missingIndexes.size(), missingIndexes);
+        }
         return new StepValidation()
             .withDescription(ValidationStepDescription.SEARCH.key)
-            .withPassed(Boolean.TRUE)
-            .withMessage(
-                String.format(
-                    "Connected to %s",
-                    applicationConfig.getElasticSearchConfiguration().getHost()));
+            .withPassed(missingIndexes.isEmpty())
+            .withMessage(message);
       } else {
         return new StepValidation()
             .withDescription(ValidationStepDescription.SEARCH.key)
@@ -573,6 +822,22 @@ public class SystemRepository {
     }
   }
 
+  private List<String> findMissingIndexes(SearchRepository searchRepository) {
+    List<String> missing = new ArrayList<>();
+    try {
+      Map<String, org.openmetadata.search.IndexMapping> indexMap =
+          searchRepository.getEntityIndexMap();
+      for (Map.Entry<String, org.openmetadata.search.IndexMapping> entry : indexMap.entrySet()) {
+        if (!searchRepository.indexExists(entry.getValue())) {
+          missing.add(entry.getKey());
+        }
+      }
+    } catch (Exception e) {
+      LOG.warn("Failed to check for missing indexes: {}", e.getMessage());
+    }
+    return missing;
+  }
+
   private boolean validateDataInsights() {
     boolean isValid = false;
 
@@ -584,7 +849,7 @@ public class SystemRepository {
       SearchRepository searchRepository = Entity.getSearchRepository();
       String dataStreamName = getDataStreamName(searchRepository.getClusterAlias(), Entity.TABLE);
 
-      if (Boolean.TRUE.equals(searchRepository.getSearchClient().isClientAvailable())
+      if (searchRepository.getSearchClient().isClientAvailable()
           && searchRepository.getSearchClient().indexExists(dataStreamName)) {
         isValid = true;
       }
@@ -599,21 +864,28 @@ public class SystemRepository {
       OpenMetadataApplicationConfig applicationConfig,
       PipelineServiceClientInterface pipelineServiceClient) {
     if (pipelineServiceClient != null) {
-      PipelineServiceClientResponse pipelineResponse = pipelineServiceClient.getServiceStatus();
-      if (pipelineResponse.getCode() == 200) {
-        return new StepValidation()
-            .withDescription(ValidationStepDescription.PIPELINE_SERVICE_CLIENT.key)
-            .withPassed(Boolean.TRUE)
-            .withMessage(
-                String.format(
-                    "%s is available at %s",
-                    pipelineServiceClient.getPlatform(),
-                    applicationConfig.getPipelineServiceClientConfiguration().getApiEndpoint()));
-      } else {
+      try {
+        PipelineServiceClientResponse pipelineResponse = pipelineServiceClient.getServiceStatus();
+        if (pipelineResponse.getCode() == 200) {
+          return new StepValidation()
+              .withDescription(ValidationStepDescription.PIPELINE_SERVICE_CLIENT.key)
+              .withPassed(Boolean.TRUE)
+              .withMessage(
+                  String.format(
+                      "%s is available at %s",
+                      pipelineServiceClient.getPlatform(),
+                      applicationConfig.getPipelineServiceClientConfiguration().getApiEndpoint()));
+        } else {
+          return new StepValidation()
+              .withDescription(ValidationStepDescription.PIPELINE_SERVICE_CLIENT.key)
+              .withPassed(Boolean.FALSE)
+              .withMessage(pipelineResponse.getReason());
+        }
+      } catch (Exception e) {
         return new StepValidation()
             .withDescription(ValidationStepDescription.PIPELINE_SERVICE_CLIENT.key)
             .withPassed(Boolean.FALSE)
-            .withMessage(pipelineResponse.getReason());
+            .withMessage(e.getMessage());
       }
     }
     return new StepValidation()
@@ -757,7 +1029,9 @@ public class SystemRepository {
   }
 
   public SecurityValidationResponse validateSecurityConfiguration(
-      SecurityConfiguration securityConfig, OpenMetadataApplicationConfig applicationConfig) {
+      SecurityConfiguration securityConfig,
+      OpenMetadataApplicationConfig applicationConfig,
+      String currentUsername) {
     List<FieldError> errors = new ArrayList<>();
 
     try {
@@ -809,7 +1083,8 @@ public class SystemRepository {
       // Validate Authorizer configuration
       if (securityConfig.getAuthorizerConfiguration() != null) {
         FieldError authzError =
-            validateAuthorizerConfiguration(securityConfig.getAuthorizerConfiguration());
+            validateAuthorizerConfiguration(
+                securityConfig.getAuthorizerConfiguration(), currentUsername);
         if (authzError != null) {
           errors.add(authzError);
         }
@@ -837,10 +1112,6 @@ public class SystemRepository {
   private FieldError validateAuthenticationConfigurationBaseFields(
       AuthenticationConfiguration authConfig) {
     try {
-      // Validate all required fields from AuthenticationConfiguration schema
-      // Required: ["provider", "providerName", "publicKeyUrls", "authority", "callbackUrl",
-      // "clientId", "jwtPrincipalClaims"]
-
       if (authConfig.getProvider() == null) {
         return ValidationErrorBuilder.createFieldError(
             FieldPaths.AUTH_PROVIDER, "Provider is required");
@@ -851,30 +1122,54 @@ public class SystemRepository {
             "authenticationConfiguration.providerName", "Provider name is required");
       }
 
-      if (authConfig.getPublicKeyUrls() == null || authConfig.getPublicKeyUrls().isEmpty()) {
-        return ValidationErrorBuilder.createFieldError(
-            FieldPaths.AUTH_PUBLIC_KEY_URLS, "Public key URLs are required");
-      }
-
-      if (nullOrEmpty(authConfig.getAuthority())) {
-        return ValidationErrorBuilder.createFieldError(
-            FieldPaths.AUTH_AUTHORITY, "Authority is required");
-      }
-
-      if (nullOrEmpty(authConfig.getCallbackUrl())) {
-        return ValidationErrorBuilder.createFieldError(
-            FieldPaths.AUTH_CALLBACK_URL, "Callback URL is required");
-      }
-
-      if (nullOrEmpty(authConfig.getClientId())) {
-        return ValidationErrorBuilder.createFieldError(
-            FieldPaths.AUTH_CLIENT_ID, "Client ID is required");
-      }
-
       if (authConfig.getJwtPrincipalClaims() == null
           || authConfig.getJwtPrincipalClaims().isEmpty()) {
         return ValidationErrorBuilder.createFieldError(
             FieldPaths.AUTH_JWT_PRINCIPAL_CLAIMS, "JWT principal claims are required");
+      }
+
+      boolean isLdapOrSaml =
+          authConfig.getProvider() == AuthProvider.LDAP
+              || authConfig.getProvider() == AuthProvider.SAML;
+
+      if (!isLdapOrSaml) {
+        // For confidential clients, publicKeyUrls is auto-populated from discovery document
+        // Only require it for public clients
+        boolean isConfidentialClient = authConfig.getClientType() == ClientType.CONFIDENTIAL;
+        if (!isConfidentialClient
+            && (authConfig.getPublicKeyUrls() == null || authConfig.getPublicKeyUrls().isEmpty())) {
+          return ValidationErrorBuilder.createFieldError(
+              FieldPaths.AUTH_PUBLIC_KEY_URLS, "Public key URLs are required");
+        }
+
+        if (nullOrEmpty(authConfig.getAuthority())) {
+          return ValidationErrorBuilder.createFieldError(
+              FieldPaths.AUTH_AUTHORITY, "Authority is required");
+        }
+
+        if (nullOrEmpty(authConfig.getCallbackUrl())) {
+          return ValidationErrorBuilder.createFieldError(
+              FieldPaths.AUTH_CALLBACK_URL, "Callback URL is required");
+        }
+
+        if (nullOrEmpty(authConfig.getClientId())) {
+          return ValidationErrorBuilder.createFieldError(
+              FieldPaths.AUTH_CLIENT_ID, "Client ID is required");
+        }
+      }
+
+      if (authConfig.getJwtPrincipalClaimsMapping() != null
+          && !authConfig.getJwtPrincipalClaimsMapping().isEmpty()) {
+        try {
+          Map<String, String> claimsMapping =
+              listOrEmpty(authConfig.getJwtPrincipalClaimsMapping()).stream()
+                  .map(s -> s.split(":"))
+                  .collect(Collectors.toMap(s -> s[0], s -> s[1]));
+          SecurityUtil.validatePrincipalClaimsMapping(claimsMapping);
+        } catch (Exception e) {
+          return ValidationErrorBuilder.createFieldError(
+              FieldPaths.AUTH_JWT_PRINCIPAL_CLAIMS_MAPPING, e.getMessage());
+        }
       }
 
       return null; // No errors - validation passed
@@ -1006,6 +1301,54 @@ public class SystemRepository {
     }
   }
 
+  /**
+   * Auto-populates publicKeyUrls from OIDC discovery document for confidential clients
+   * This is called during save operation to ensure publicKeyUrls is populated before persisting
+   */
+  public void autoPopulatePublicKeyUrlsIfNeeded(AuthenticationConfiguration authConfig) {
+    if (authConfig == null) {
+      return;
+    }
+
+    // Only auto-populate for OIDC providers with confidential client type
+    boolean isOidcProvider =
+        authConfig.getProvider() == AuthProvider.CUSTOM_OIDC
+            || authConfig.getProvider() == AuthProvider.GOOGLE
+            || authConfig.getProvider() == AuthProvider.AZURE
+            || authConfig.getProvider() == AuthProvider.OKTA
+            || authConfig.getProvider() == AuthProvider.AUTH_0
+            || authConfig.getProvider() == AuthProvider.AWS_COGNITO;
+
+    boolean isConfidentialClient = authConfig.getClientType() == ClientType.CONFIDENTIAL;
+
+    if (!isOidcProvider || !isConfidentialClient) {
+      LOG.debug("Skipping publicKeyUrls auto-population - not OIDC confidential client");
+      return;
+    }
+
+    // Skip if already populated
+    if (authConfig.getPublicKeyUrls() != null && !authConfig.getPublicKeyUrls().isEmpty()) {
+      LOG.debug("publicKeyUrls already populated, skipping auto-population");
+      return;
+    }
+
+    OidcClientConfig oidcConfig = authConfig.getOidcConfiguration();
+    if (oidcConfig == null || nullOrEmpty(oidcConfig.getDiscoveryUri())) {
+      LOG.warn("Cannot auto-populate publicKeyUrls - missing oidcConfiguration or discoveryUri");
+      return;
+    }
+
+    try {
+      OidcDiscoveryValidator discoveryValidator = new OidcDiscoveryValidator();
+      discoveryValidator.autoPopulatePublicKeyUrls(oidcConfig.getDiscoveryUri(), authConfig);
+      LOG.info(
+          "Auto-populated publicKeyUrls from discovery document for provider: {}",
+          authConfig.getProvider());
+    } catch (Exception e) {
+      LOG.error("Failed to auto-populate publicKeyUrls: {}", e.getMessage(), e);
+    }
+  }
+
   private FieldError validateLdapConfiguration(LdapConfiguration ldapConfig) {
     try {
       // Validate required fields from JSON schema
@@ -1033,6 +1376,45 @@ public class SystemRepository {
       if (nullOrEmpty(ldapConfig.getMailAttributeName())) {
         return ValidationErrorBuilder.createFieldError(
             FieldPaths.LDAP_MAIL_ATTRIBUTE, "Mail attribute name is required");
+      }
+
+      // Validate authRolesMapping JSON if provided - but only if we have group configuration
+      // Note: We validate this before LDAP connection to fail fast on JSON issues
+      Map<String, List<String>> roleMapping = null;
+      if (!nullOrEmpty(ldapConfig.getAuthRolesMapping())) {
+        try {
+          roleMapping =
+              JsonUtils.readValue(ldapConfig.getAuthRolesMapping(), new TypeReference<>() {});
+
+          // Validate that mapped roles exist in OpenMetadata
+          RoleRepository roleRepo = (RoleRepository) Entity.getEntityRepository(Entity.ROLE);
+          List<String> invalidRoles = new ArrayList<>();
+
+          for (Map.Entry<String, List<String>> entry : roleMapping.entrySet()) {
+            for (String roleName : entry.getValue()) {
+              // Skip admin role name check as it's a special marker
+              if (!roleName.equals(ldapConfig.getRoleAdminName())) {
+                try {
+                  roleRepo.getByName(null, roleName, roleRepo.getFields("id,name"));
+                } catch (EntityNotFoundException e) {
+                  invalidRoles.add(roleName);
+                }
+              }
+            }
+          }
+
+          if (!invalidRoles.isEmpty()) {
+            return ValidationErrorBuilder.createFieldError(
+                FieldPaths.LDAP_AUTH_ROLES_MAPPING,
+                "The following roles do not exist in OpenMetadata: "
+                    + String.join(", ", invalidRoles)
+                    + ". Please create these roles first or use existing role names.");
+          }
+        } catch (Exception e) {
+          return ValidationErrorBuilder.createFieldError(
+              FieldPaths.LDAP_AUTH_ROLES_MAPPING,
+              "Invalid JSON format in role mapping: " + e.getMessage());
+        }
       }
 
       // Test LDAP connection
@@ -1072,16 +1454,173 @@ public class SystemRepository {
               FieldPaths.LDAP_USER_BASE_DN, "User base DN does not exist");
         }
 
-        // Test group base DN if provided
-        if (!nullOrEmpty(ldapConfig.getGroupBaseDN())) {
+        // Validate mail attribute by searching for a test user
+        if (!nullOrEmpty(ldapConfig.getMailAttributeName())) {
           try {
-            SearchResult groupResult =
-                connection.search(ldapConfig.getGroupBaseDN(), SearchScope.BASE, "(objectClass=*)");
-            if (groupResult.getEntryCount() == 0) {
-              LOG.warn("Group base DN does not exist: " + ldapConfig.getGroupBaseDN());
+            SearchResult userSearchResult =
+                connection.search(
+                    ldapConfig.getUserBaseDN(),
+                    SearchScope.SUB,
+                    "(objectClass=*)",
+                    ldapConfig.getMailAttributeName());
+
+            if (userSearchResult.getEntryCount() > 0) {
+              // Check if at least one user has the mail attribute
+              boolean mailAttributeFound = false;
+              for (int i = 0; i < Math.min(userSearchResult.getEntryCount(), 10); i++) {
+                if (userSearchResult
+                        .getSearchEntries()
+                        .get(i)
+                        .hasAttribute(ldapConfig.getMailAttributeName())
+                    && !nullOrEmpty(
+                        userSearchResult
+                            .getSearchEntries()
+                            .get(i)
+                            .getAttributeValue(ldapConfig.getMailAttributeName()))) {
+                  mailAttributeFound = true;
+                  break;
+                }
+              }
+
+              if (!mailAttributeFound) {
+                return ValidationErrorBuilder.createFieldError(
+                    FieldPaths.LDAP_MAIL_ATTRIBUTE,
+                    "Mail attribute '"
+                        + ldapConfig.getMailAttributeName()
+                        + "' not found on any users in user base DN. "
+                        + "Please verify the attribute name is correct. "
+                        + "Common values: 'mail', 'email', 'userPrincipalName'");
+              }
             }
           } catch (Exception e) {
-            LOG.warn("Failed to validate group base DN: " + e.getMessage());
+            LOG.warn("Failed to validate mail attribute: {}", e.getMessage());
+          }
+        }
+
+        // Validate group-related configuration if group base DN is provided
+        if (!nullOrEmpty(ldapConfig.getGroupBaseDN())) {
+          // 1. Validate group base DN exists
+          try {
+            SearchResult groupBaseDnResult =
+                connection.search(ldapConfig.getGroupBaseDN(), SearchScope.BASE, "(objectClass=*)");
+            if (groupBaseDnResult.getEntryCount() == 0) {
+              return ValidationErrorBuilder.createFieldError(
+                  FieldPaths.LDAP_GROUP_BASE_DN, "Group base DN does not exist in LDAP directory");
+            }
+          } catch (Exception e) {
+            return ValidationErrorBuilder.createFieldError(
+                FieldPaths.LDAP_GROUP_BASE_DN,
+                "Failed to validate group base DN: " + e.getMessage());
+          }
+
+          // 2. Validate group attribute name and value together
+          if (!nullOrEmpty(ldapConfig.getGroupAttributeName())
+              && !nullOrEmpty(ldapConfig.getGroupAttributeValue())) {
+            try {
+              String groupFilter =
+                  "("
+                      + ldapConfig.getGroupAttributeName()
+                      + "="
+                      + ldapConfig.getGroupAttributeValue()
+                      + ")";
+              SearchResult groupFilterResult =
+                  connection.search(ldapConfig.getGroupBaseDN(), SearchScope.SUB, groupFilter, "*");
+
+              if (groupFilterResult.getEntryCount() == 0) {
+                return ValidationErrorBuilder.createFieldError(
+                    FieldPaths.LDAP_GROUP_ATTRIBUTE_NAME,
+                    "No groups found with "
+                        + ldapConfig.getGroupAttributeName()
+                        + "="
+                        + ldapConfig.getGroupAttributeValue()
+                        + ". "
+                        + "Common values: groupAttributeName='objectClass' with "
+                        + "groupAttributeValue='groupOfNames' or 'groupOfUniqueNames'");
+              }
+
+              // 3. Validate group member attribute exists on group objects
+              if (!nullOrEmpty(ldapConfig.getGroupMemberAttributeName())) {
+                boolean memberAttributeFound = false;
+                for (int i = 0;
+                    i < Math.min(groupFilterResult.getEntryCount(), 5);
+                    i++) { // Check first 5 groups
+                  if (groupFilterResult
+                      .getSearchEntries()
+                      .get(i)
+                      .hasAttribute(ldapConfig.getGroupMemberAttributeName())) {
+                    memberAttributeFound = true;
+                    break;
+                  }
+                }
+
+                if (!memberAttributeFound) {
+                  return ValidationErrorBuilder.createFieldError(
+                      FieldPaths.LDAP_GROUP_MEMBER_ATTRIBUTE_NAME,
+                      "Group member attribute '"
+                          + ldapConfig.getGroupMemberAttributeName()
+                          + "' not found on any groups. "
+                          + "Common values: 'member' (for groupOfNames), 'uniqueMember' (for "
+                          + "groupOfUniqueNames), 'memberUid' (for posixGroup)");
+                }
+              } else {
+                return ValidationErrorBuilder.createFieldError(
+                    FieldPaths.LDAP_GROUP_MEMBER_ATTRIBUTE_NAME,
+                    "Group member attribute name is required when group base DN is configured. "
+                        + "This attribute identifies users in group objects. "
+                        + "Common values: 'member', 'uniqueMember', 'memberUid'");
+              }
+
+            } catch (Exception e) {
+              return ValidationErrorBuilder.createFieldError(
+                  FieldPaths.LDAP_GROUP_ATTRIBUTE_NAME,
+                  "Failed to validate group filter: " + e.getMessage());
+            }
+          } else {
+            // Group attribute name/value are required if group base DN is provided
+            if (nullOrEmpty(ldapConfig.getGroupAttributeName())) {
+              return ValidationErrorBuilder.createFieldError(
+                  FieldPaths.LDAP_GROUP_ATTRIBUTE_NAME,
+                  "Group attribute name is required when group base DN is configured. "
+                      + "This identifies group objects in LDAP. "
+                      + "Common value: 'objectClass'");
+            }
+            if (nullOrEmpty(ldapConfig.getGroupAttributeValue())) {
+              return ValidationErrorBuilder.createFieldError(
+                  FieldPaths.LDAP_GROUP_ATTRIBUTE_VALUE,
+                  "Group attribute value is required when group base DN is configured. "
+                      + "This specifies the type of group objects. "
+                      + "Common values: 'groupOfNames', 'groupOfUniqueNames', 'posixGroup'");
+            }
+          }
+        }
+
+        // Validate that LDAP group DNs in role mapping actually exist in LDAP
+        if (roleMapping != null
+            && !roleMapping.isEmpty()
+            && !nullOrEmpty(ldapConfig.getGroupBaseDN())) {
+          List<String> invalidGroupDns = new ArrayList<>();
+
+          for (String groupDn : roleMapping.keySet()) {
+            try {
+              // Try to retrieve the group by its DN
+              SearchResult groupCheck =
+                  connection.search(groupDn, SearchScope.BASE, "(objectClass=*)");
+              if (groupCheck.getEntryCount() == 0) {
+                invalidGroupDns.add(groupDn);
+              }
+            } catch (Exception e) {
+              // Group DN doesn't exist or is invalid
+              invalidGroupDns.add(groupDn + " (error: " + e.getMessage() + ")");
+            }
+          }
+
+          if (!invalidGroupDns.isEmpty()) {
+            return ValidationErrorBuilder.createFieldError(
+                FieldPaths.LDAP_AUTH_ROLES_MAPPING,
+                "The following LDAP group DNs do not exist in your LDAP directory: "
+                    + String.join(", ", invalidGroupDns)
+                    + ". Please verify the group DNs are correct. "
+                    + "You can find correct group DNs in phpLDAPadmin by browsing to your groups.");
           }
         }
 
@@ -1093,6 +1632,44 @@ public class SystemRepository {
       }
     } catch (Exception e) {
       return mapLdapExceptionToFieldError(e);
+    }
+  }
+
+  /**
+   * Ensures LDAP configuration fields have default values to prevent JSON PATCH errors. When
+   * fields are null in the database and the UI tries to update them with "replace" operation, JSON
+   * PATCH fails because "replace" requires the field to exist. By providing empty string defaults,
+   * we make "replace" operations work correctly while keeping validation and authentication logic
+   * safe (since nullOrEmpty() treats both null and "" as empty).
+   */
+  public void ensureLdapConfigDefaultValues(LdapConfiguration ldapConfig) {
+    if (ldapConfig == null) {
+      return;
+    }
+
+    // Ensure group-related fields have defaults to prevent JSON PATCH errors
+    if (ldapConfig.getGroupAttributeName() == null) {
+      ldapConfig.setGroupAttributeName("");
+    }
+    if (ldapConfig.getGroupAttributeValue() == null) {
+      ldapConfig.setGroupAttributeValue("");
+    }
+    if (ldapConfig.getGroupMemberAttributeName() == null) {
+      ldapConfig.setGroupMemberAttributeName("");
+    }
+    if (ldapConfig.getGroupBaseDN() == null) {
+      ldapConfig.setGroupBaseDN("");
+    }
+
+    // Ensure other optional fields have defaults
+    if (ldapConfig.getRoleAdminName() == null) {
+      ldapConfig.setRoleAdminName("");
+    }
+    if (ldapConfig.getAllAttributeName() == null) {
+      ldapConfig.setAllAttributeName("");
+    }
+    if (ldapConfig.getAuthRolesMapping() == null) {
+      ldapConfig.setAuthRolesMapping("");
     }
   }
 
@@ -1152,11 +1729,8 @@ public class SystemRepository {
       // Use enhanced SAML validator - this performs comprehensive validation
       // without affecting production settings
       SamlValidator samlValidator = new SamlValidator();
-      FieldError result = samlValidator.validateSamlConfiguration(null, samlConfig);
-      if (result != null) {
-        return result;
-      }
-      return null; // No errors - validation passed
+      return samlValidator.validateSamlConfiguration(
+          null, samlConfig); // No errors - validation passed
     } catch (Exception e) {
       String fieldPath = determineFieldPathFromError("saml", e.getMessage());
       return ValidationErrorBuilder.createFieldError(
@@ -1164,7 +1738,8 @@ public class SystemRepository {
     }
   }
 
-  private FieldError validateAuthorizerConfiguration(AuthorizerConfiguration authzConfig) {
+  private FieldError validateAuthorizerConfiguration(
+      AuthorizerConfiguration authzConfig, String currentUsername) {
     try {
       // Validate required fields
       if (nullOrEmpty(authzConfig.getClassName())) {

@@ -25,9 +25,8 @@
           ]
         },
         "om_ngram": {
-          "tokenizer": "ngram",
-          "min_gram": 1,
-          "max_gram": 2,
+          "type": "custom",
+          "tokenizer": "n_gram_tokenizer",
           "filter": [
             "lowercase"
           ]
@@ -58,11 +57,28 @@
           "preserve_original": true,
           "stem_english_possessive": true
         }
+      },
+      "tokenizer": {
+        "n_gram_tokenizer": {
+          "type": "ngram",
+          "min_gram": 1,
+          "max_gram": 2,
+          "token_chars": [
+            "letter",
+            "digit"
+          ]
+        }
       }
     }
   },
   "mappings": {
     "properties": {
+      "changeDescription": {
+        "enabled": false
+      },
+      "incrementalChangeDescription": {
+        "enabled": false
+      },
       "id": {
         "type": "text",
         "fields": {
@@ -291,7 +307,7 @@
         }
       },
       "extension": {
-        "type": "object"
+        "type": "flattened"
       },
       "dataProducts": {
         "properties": {
@@ -442,6 +458,7 @@
         }
       },
       "owners": {
+        "type": "nested",
         "properties": {
           "id": {
             "type": "keyword",
@@ -574,6 +591,10 @@
                 "type": "long"
               }
             }
+          },
+          "date": {
+            "type": "date",
+            "format": "strict_date_optional_time||yyyy-MM-dd HH:mm:ss||epoch_millis"
           }
         }
       },
@@ -643,7 +664,8 @@
         }
       },
       "lifeCycle": {
-        "type": "object"
+        "type": "object",
+        "dynamic": false
       },
       "serviceType": {
         "type": "keyword",
@@ -718,6 +740,71 @@
             "ignore_above": 512
           }
         }
+      },
+      "customPropertiesTyped": {
+        "type": "nested",
+        "properties": {
+          "name": {
+            "type": "keyword"
+          },
+          "propertyType": {
+            "type": "keyword"
+          },
+          "stringValue": {
+            "type": "keyword"
+          },
+          "textValue": {
+            "type": "text",
+            "analyzer": "om_analyzer"
+          },
+          "longValue": {
+            "type": "long"
+          },
+          "doubleValue": {
+            "type": "double"
+          },
+          "start": {
+            "type": "long"
+          },
+          "end": {
+            "type": "long"
+          },
+          "refId": {
+            "type": "keyword"
+          },
+          "refType": {
+            "type": "keyword"
+          },
+          "refName": {
+            "type": "keyword"
+          },
+          "refFqn": {
+            "type": "keyword"
+          }
+        }
+      },
+      "fingerprint": {
+        "type": "keyword"
+      },
+      "textToEmbed": {
+        "type": "text"
+      },
+      "chunkIndex": {
+        "type": "integer"
+      },
+      "chunkCount": {
+        "type": "integer"
+      },
+      "parentId": {
+        "type": "keyword"
+      },
+      "ownerDisplayName": {
+        "type": "keyword",
+        "normalizer": "lowercase_normalizer"
+      },
+      "ownerName": {
+        "type": "keyword",
+        "normalizer": "lowercase_normalizer"
       }
     }
   }

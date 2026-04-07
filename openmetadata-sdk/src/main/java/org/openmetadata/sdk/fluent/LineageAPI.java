@@ -41,27 +41,12 @@ import org.openmetadata.sdk.client.OpenMetadataClient;
  *     .to("dashboard", dashboardId)
  *     .confirm();
  *
- * // Export lineage graph
- * var graph = Lineage.export()
- *     .entity("table", tableId)
- *     .format(ExportFormat.DOT)
- *     .includeUpstream(true)
- *     .includeDownstream(true)
- *     .maxDepth(5)
+ * // Export lineage
+ * var csv = Lineage.export()
+ *     .entity("table", fqn)
+ *     .upstream(3)
+ *     .downstream(2)
  *     .execute();
- *
- * // Query lineage path
- * var path = Lineage.path()
- *     .from("table", sourceTableId)
- *     .to("dashboard", dashboardId)
- *     .findShortest();
- *
- * // Get impact analysis
- * var impact = Lineage.impact()
- *     .of("table", tableId)
- *     .downstream()
- *     .depth(3)
- *     .analyze();
  * </pre>
  */
 public final class LineageAPI {
@@ -84,7 +69,11 @@ public final class LineageAPI {
   // ==================== Lineage Builders ====================
 
   public static LineageQuery for$(String entityType, String entityId) {
-    return new LineageQuery(getClient(), entityType, entityId);
+    return new LineageQuery(getClient(), entityType, entityId, false);
+  }
+
+  public static LineageQuery forName$(String entityType, String fqn) {
+    return new LineageQuery(getClient(), entityType, fqn, true);
   }
 
   public static LineageConnector connect() {
@@ -112,15 +101,17 @@ public final class LineageAPI {
   public static class LineageQuery {
     private final OpenMetadataClient client;
     private final String entityType;
-    private final String entityId;
+    private final String identifier;
+    private final boolean isFqn;
     private int upstreamDepth = 1;
     private int downstreamDepth = 1;
     private boolean includeDeleted = false;
 
-    LineageQuery(OpenMetadataClient client, String entityType, String entityId) {
+    LineageQuery(OpenMetadataClient client, String entityType, String identifier, boolean isFqn) {
       this.client = client;
       this.entityType = entityType;
-      this.entityId = entityId;
+      this.identifier = identifier;
+      this.isFqn = isFqn;
     }
 
     public LineageQuery upstream(int depth) {
@@ -145,14 +136,26 @@ public final class LineageAPI {
     }
 
     public LineageGraph fetch() {
-      String result =
-          client
-              .lineage()
-              .getEntityLineage(
-                  entityType,
-                  entityId,
-                  String.valueOf(upstreamDepth),
-                  String.valueOf(downstreamDepth));
+      String result;
+      if (isFqn) {
+        result =
+            client
+                .lineage()
+                .getLineageByName(
+                    entityType,
+                    identifier,
+                    String.valueOf(upstreamDepth),
+                    String.valueOf(downstreamDepth));
+      } else {
+        result =
+            client
+                .lineage()
+                .getEntityLineage(
+                    entityType,
+                    identifier,
+                    String.valueOf(upstreamDepth),
+                    String.valueOf(downstreamDepth));
+      }
       return new LineageGraph(result, client);
     }
   }
@@ -227,21 +230,41 @@ public final class LineageAPI {
       edge.put("fromEntity", fromEntity.toMap());
       edge.put("toEntity", toEntity.toMap());
 
-      if (!fromColumns.isEmpty()) {
-        edge.put("fromColumns", fromColumns);
-      }
-      if (!toColumns.isEmpty()) {
-        edge.put("toColumns", toColumns);
-      }
-      if (pipelineEntity != null) {
-        edge.put("pipeline", pipelineEntity.toMap());
-      }
       if (description != null) {
         edge.put("description", description);
       }
-      if (sqlQuery != null) {
-        edge.put("sqlQuery", sqlQuery);
+
+      boolean hasDetails =
+          !fromColumns.isEmpty()
+              || !toColumns.isEmpty()
+              || pipelineEntity != null
+              || sqlQuery != null;
+
+      if (hasDetails) {
+        Map<String, Object> lineageDetails = new HashMap<>();
+
+        if (!toColumns.isEmpty()) {
+          List<Map<String, Object>> columnsLineage = new ArrayList<>();
+          for (String toCol : toColumns) {
+            Map<String, Object> mapping = new HashMap<>();
+            mapping.put("fromColumns", new ArrayList<>(fromColumns));
+            mapping.put("toColumn", toCol);
+            columnsLineage.add(mapping);
+          }
+          lineageDetails.put("columnsLineage", columnsLineage);
+        }
+
+        if (pipelineEntity != null) {
+          lineageDetails.put("pipeline", pipelineEntity.toMap());
+        }
+
+        if (sqlQuery != null) {
+          lineageDetails.put("sqlQuery", sqlQuery);
+        }
+
+        edge.put("lineageDetails", lineageDetails);
       }
+
       if (!properties.isEmpty()) {
         edge.put("properties", properties);
       }
@@ -282,44 +305,35 @@ public final class LineageAPI {
   public static class LineageExporter {
     private final OpenMetadataClient client;
     private String entityType;
-    private String entityId;
-    private ExportFormat format = ExportFormat.JSON;
-    private boolean includeUpstream = true;
-    private boolean includeDownstream = true;
-    private int maxDepth = 3;
+    private String fqn;
+    private int upstreamDepth = 1;
+    private int downstreamDepth = 1;
 
     LineageExporter(OpenMetadataClient client) {
       this.client = client;
     }
 
-    public LineageExporter entity(String entityType, String entityId) {
+    public LineageExporter entity(String entityType, String fqn) {
       this.entityType = entityType;
-      this.entityId = entityId;
+      this.fqn = fqn;
       return this;
     }
 
-    public LineageExporter format(ExportFormat format) {
-      this.format = format;
+    public LineageExporter upstream(int depth) {
+      this.upstreamDepth = depth;
       return this;
     }
 
-    public LineageExporter includeUpstream(boolean include) {
-      this.includeUpstream = include;
-      return this;
-    }
-
-    public LineageExporter includeDownstream(boolean include) {
-      this.includeDownstream = include;
-      return this;
-    }
-
-    public LineageExporter maxDepth(int depth) {
-      this.maxDepth = depth;
+    public LineageExporter downstream(int depth) {
+      this.downstreamDepth = depth;
       return this;
     }
 
     public String execute() {
-      return client.lineage().exportLineage(entityType, entityId);
+      return client
+          .lineage()
+          .exportLineage(
+              fqn, entityType, String.valueOf(upstreamDepth), String.valueOf(downstreamDepth));
     }
   }
 
@@ -585,13 +599,6 @@ public final class LineageAPI {
   }
 
   // ==================== Enums ====================
-
-  public enum ExportFormat {
-    JSON,
-    DOT,
-    GRAPHML,
-    CSV
-  }
 
   public enum Direction {
     UPSTREAM,

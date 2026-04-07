@@ -256,18 +256,13 @@ public class S3LogStorage implements LogStorageInterface {
       } else {
         return StaticCredentialsProvider.create(AwsBasicCredentials.create(accessKey, secretKey));
       }
+    } else if (Boolean.TRUE.equals(config.getEnabled())) {
+      LOG.info("Using AWS DefaultCredentialsProvider (IAM auth enabled)");
+      return DefaultCredentialsProvider.create();
     } else {
-      try {
-        AwsCredentialsProvider defaultProvider = DefaultCredentialsProvider.create();
-        defaultProvider.resolveCredentials(); // Triggers validation
-        LOG.info("Using AWS DefaultCredentialsProvider");
-        return defaultProvider;
-      } catch (Exception e) {
-        LOG.warn(
-            "Default credentials not found. Falling back to static credentials. Reason: {}",
-            e.getMessage());
-        return StaticCredentialsProvider.create(AwsBasicCredentials.create(accessKey, secretKey));
-      }
+      throw new IllegalArgumentException(
+          "AWS credentials not configured for S3 log storage. Either provide "
+              + "awsAccessKeyId/awsSecretAccessKey or set enabled=true to use IAM authentication.");
     }
   }
 
@@ -530,8 +525,14 @@ public class S3LogStorage implements LogStorageInterface {
         List<String> lines = new ArrayList<>();
         String line;
         int lineNumber = 0;
-        int startLine =
-            afterCursor != null && !afterCursor.isEmpty() ? Integer.parseInt(afterCursor) : 0;
+        int startLine = 0;
+        if (afterCursor != null && !afterCursor.isEmpty()) {
+          try {
+            startLine = Integer.parseInt(afterCursor);
+          } catch (NumberFormatException ex) {
+            LOG.warn("Invalid cursor format: {}", afterCursor);
+          }
+        }
 
         while (lineNumber < startLine && (line = reader.readLine()) != null) {
           lineNumber++;
@@ -577,7 +578,6 @@ public class S3LogStorage implements LogStorageInterface {
   @Override
   public List<UUID> listRuns(String pipelineFQN, int limit) throws IOException {
     String keyPrefix = buildKeyPrefix(pipelineFQN);
-    List<UUID> runIds = new ArrayList<>();
     Set<UUID> uniqueRunIds = new HashSet<>();
 
     Timer.Sample s3Sample = null;
@@ -622,7 +622,7 @@ public class S3LogStorage implements LogStorageInterface {
         }
       }
 
-      runIds.addAll(uniqueRunIds);
+      List<UUID> runIds = new ArrayList<>(uniqueRunIds);
 
       runIds.sort(Collections.reverseOrder());
 
@@ -680,6 +680,7 @@ public class S3LogStorage implements LogStorageInterface {
   @Override
   public void deleteAllLogs(String pipelineFQN) throws IOException {
     String keyPrefix = buildKeyPrefix(pipelineFQN);
+    String streamKeyPrefix = pipelineFQN + "/";
 
     // Clean up active streams for this pipeline
     activeStreams
@@ -698,6 +699,10 @@ public class S3LogStorage implements LogStorageInterface {
               }
               return false;
             });
+
+    recentLogsCache.asMap().keySet().removeIf(streamKey -> streamKey.startsWith(streamKeyPrefix));
+    activeListeners.keySet().removeIf(streamKey -> streamKey.startsWith(streamKeyPrefix));
+    partialLogOffsets.keySet().removeIf(streamKey -> streamKey.startsWith(streamKeyPrefix));
 
     try {
       ListObjectsV2Request request =
@@ -757,7 +762,7 @@ public class S3LogStorage implements LogStorageInterface {
   }
 
   @Override
-  public void close() throws IOException {
+  public void close() {
     // Close all active multipart upload streams
     for (StreamContext context : activeStreams.values()) {
       try {
@@ -1250,7 +1255,7 @@ public class S3LogStorage implements LogStorageInterface {
     }
 
     @Override
-    public void flush() throws IOException {}
+    public void flush() {}
 
     @Override
     public void close() throws IOException {
@@ -1357,7 +1362,7 @@ public class S3LogStorage implements LogStorageInterface {
                   completedParts.add(part);
                 }
               } else {
-                LOG.error("Failed to upload part " + currentPartNumber, throwable);
+                LOG.error("Failed to upload part {} ", currentPartNumber, throwable);
               }
             });
 
@@ -1437,7 +1442,7 @@ public class S3LogStorage implements LogStorageInterface {
    * This provides the best experience: processed logs when available, recent logs when not
    */
   private Map<String, Object> getCombinedLogsForActiveStream(
-      String pipelineFQN, UUID runId, String afterCursor, int limit) throws IOException {
+      String pipelineFQN, UUID runId, String afterCursor, int limit) {
     Map<String, Object> result = new HashMap<>();
     List<String> allLines = new ArrayList<>();
     boolean foundPartialFile = false;
@@ -1570,8 +1575,8 @@ public class S3LogStorage implements LogStorageInterface {
         if (lines.size() > maxCapacity) {
           // Remove oldest lines to stay within capacity
           int excess = lines.size() - maxCapacity;
-          for (int i = 0; i < excess; i++) {
-            lines.remove(0);
+          if (excess > 0) {
+            lines.subList(0, excess).clear();
           }
         }
       }

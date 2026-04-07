@@ -11,19 +11,27 @@
  *  limitations under the License.
  */
 import Icon from '@ant-design/icons';
-import { ColumnsType } from 'antd/lib/table';
+import { ColumnsType, ColumnType } from 'antd/lib/table';
 import classNames from 'classnames';
 import { ReactComponent as FilterIcon } from '../assets/svg/ic-filter.svg';
 import { DomainLabel } from '../components/common/DomainLabel/DomainLabel.component';
 import { OwnerLabel } from '../components/common/OwnerLabel/OwnerLabel.component';
+import RichTextEditorPreviewerNew from '../components/common/RichTextEditor/RichTextEditorPreviewNew';
 import DataProductsContainer from '../components/DataProducts/DataProductsContainer/DataProductsContainer.component';
 import TagsViewer from '../components/Tag/TagsViewer/TagsViewer';
 import { TAG_LIST_SIZE } from '../constants/constants';
 import { TABLE_COLUMNS_KEYS } from '../constants/TableKeys.constants';
 import { EntityType } from '../enums/entity.enum';
+import { AssetCertification } from '../generated/entity/data/database';
 import { EntityReference } from '../generated/type/entityReference';
 import { TagLabel } from '../generated/type/tagLabel';
 import i18n from './i18next/LocalUtil';
+import {
+  getCertificationTag,
+  getTagsWithoutCertification,
+  getTagsWithoutTier,
+  getTierTags,
+} from './TableUtils';
 
 export const columnFilterIcon = (filtered: boolean) => (
   <Icon
@@ -101,8 +109,63 @@ export const tagTableObject = <
     dataIndex: TABLE_COLUMNS_KEYS.TAGS,
     width: 240,
     key: TABLE_COLUMNS_KEYS.TAGS,
-    render: (_, record: T) => (
-      <TagsViewer sizeCap={TAG_LIST_SIZE} tags={record.tags ?? []} />
-    ),
+    render: (_, record: T) => {
+      const filteredTags = getTagsWithoutCertification(
+        getTagsWithoutTier(record.tags ?? [])
+      );
+
+      return <TagsViewer sizeCap={TAG_LIST_SIZE} tags={filteredTags} />;
+    },
+  },
+];
+
+export const tierTableObject = <
+  T extends { tags?: TagLabel[] }
+>(): ColumnsType<T> => [
+  {
+    title: i18n.t('label.tier').toString(),
+    dataIndex: TABLE_COLUMNS_KEYS.TAGS,
+    key: TABLE_COLUMNS_KEYS.TIER,
+    width: 120,
+    render: (_, record: T) => {
+      const tierTag = getTierTags(record.tags ?? []);
+
+      return <TagsViewer sizeCap={1} tags={tierTag ? [tierTag] : []} />;
+    },
+  },
+];
+
+export const certificationTableObject = <
+  T extends { certification?: AssetCertification; tags?: TagLabel[] }
+>(): ColumnsType<T> => [
+  {
+    title: i18n.t('label.certification').toString(),
+    dataIndex: TABLE_COLUMNS_KEYS.CERTIFICATION,
+    key: TABLE_COLUMNS_KEYS.CERTIFICATION,
+    width: 150,
+    render: (_, record: T) => {
+      const certTag =
+        record.certification?.tagLabel ??
+        getCertificationTag(record.tags ?? []);
+
+      return <TagsViewer sizeCap={1} tags={certTag ? [certTag] : []} />;
+    },
+  },
+];
+
+/**
+ * Generates a table column configuration for the description field.
+ * @param args - Additional column properties to be merged
+ * @returns A ColumnsType<T> array with the description column configuration
+ */
+export const descriptionTableObject = <T extends { description?: string }>(
+  args: ColumnType<T> = {}
+): ColumnsType<T> => [
+  {
+    title: i18n.t('label.description').toString(),
+    dataIndex: TABLE_COLUMNS_KEYS.DESCRIPTION,
+    key: TABLE_COLUMNS_KEYS.DESCRIPTION,
+    render: (text: string) => <RichTextEditorPreviewerNew markdown={text} />,
+    ...args,
   },
 ];

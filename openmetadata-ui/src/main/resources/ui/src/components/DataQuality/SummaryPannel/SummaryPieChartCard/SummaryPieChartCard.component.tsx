@@ -32,7 +32,7 @@ const SummaryPieChartCard = ({
     <Card className="pie-chart-summary-panel h-full" loading={isLoading}>
       <div className="d-flex justify-between items-center">
         <div>
-          <div className="d-flex items-center gap-2">
+          <div className="summary-title-row">
             <div className={classNames('icon-container', iconData?.className)}>
               {iconData?.icon}
             </div>
@@ -106,7 +106,7 @@ const SummaryPieChartCard = ({
               textAnchor="middle"
               x="50%"
               y="50%">
-              {`${percentage}%`}
+              {percentage}
             </text>
           </PieChart>
         </div>

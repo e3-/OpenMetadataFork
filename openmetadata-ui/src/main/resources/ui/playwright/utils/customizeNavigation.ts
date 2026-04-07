@@ -22,7 +22,7 @@ const NAV_ITEMS = [
   'Incident Manager',
   'Alerts',
   'Insights',
-  'Domains',
+  'Marketplace',
   'Govern',
   'Glossary',
   'Classification',
@@ -53,7 +53,7 @@ export const validateLeftSidebarWithHiddenItems = async (
     if (
       item === SidebarItem.OBSERVABILITY ||
       item === SidebarItem.GOVERNANCE ||
-      item === SidebarItem.DOMAINS
+      item === SidebarItem.DATA_MARKETPLACE_SECTION
     ) {
       await expect(page.getByTestId(item)).toBeVisible();
     } else {
@@ -61,17 +61,45 @@ export const validateLeftSidebarWithHiddenItems = async (
 
       if (items) {
         await page.hover('[data-testid="left-sidebar"]');
-        await page.waitForTimeout(300);
         await page.click(`[data-testid="${items[0]}"]`);
 
+        // Wait for dropdown to expand - wait for any child item of the parent to be visible
+        // This confirms the dropdown has fully expanded before checking specific items
+        // For Observability, wait for at least one of its children to be visible
+        const anyChildInDropdown = page
+          .locator(`[data-testid="left-sidebar"]`)
+          .locator(`[data-testid^="app-bar-item-"]`)
+          .first();
+
+        try {
+          // Wait for at least one child to be visible (with timeout)
+          await anyChildInDropdown.waitFor({ state: 'visible', timeout: 3000 });
+        } catch {
+          // If no children are visible, the dropdown might not have expanded
+          // Wait a bit more and continue
+          // eslint-disable-next-line playwright/no-wait-for-timeout -- dropdown expansion fallback delay
+          await page.waitForTimeout(500);
+        }
+
+        const childElement = page
+          .locator(`[data-testid="app-bar-item-${items[1]}"]`)
+          .first();
+
         if (hiddenItems.includes(items[1])) {
-          await expect(
-            page.getByTestId(`app-bar-item-${items[1]}`)
-          ).not.toBeVisible();
+          // For hidden items, they are filtered out from DOM entirely by filterHiddenNavigationItems
+          // Check if element exists in DOM
+          const elementCount = await childElement.count();
+
+          if (elementCount > 0) {
+            // If element exists, it should not be visible
+            await expect(childElement).not.toBeVisible();
+          }
+          // If count is 0, element doesn't exist (expected for hidden items filtered from DOM)
         } else {
-          await expect(
-            page.getByTestId(`app-bar-item-${items[1]}`)
-          ).toBeVisible();
+          // For visible items, wait for them to be visible (with timeout)
+          await childElement.waitFor({ state: 'visible', timeout: 5000 });
+
+          await expect(childElement).toBeVisible();
         }
 
         await page.click(`[data-testid="${items[0]}"]`);
@@ -80,13 +108,15 @@ export const validateLeftSidebarWithHiddenItems = async (
 
         continue;
       }
-      hiddenItems.includes(item)
-        ? await expect(
-            page.getByTestId('left-sidebar').getByTestId(`app-bar-item-${item}`)
-          ).not.toBeVisible()
-        : await expect(
-            page.getByTestId('left-sidebar').getByTestId(`app-bar-item-${item}`)
-          ).toBeVisible();
+      if (hiddenItems.includes(item)) {
+        await expect(
+          page.getByTestId('left-sidebar').getByTestId(`app-bar-item-${item}`)
+        ).not.toBeVisible();
+      } else {
+        await expect(
+          page.getByTestId('left-sidebar').getByTestId(`app-bar-item-${item}`)
+        ).toBeVisible();
+      }
     }
   }
 };
@@ -97,5 +127,4 @@ export const selectPersona = async (page: Page, persona: PersonaClass) => {
     .getByTestId('persona-label')
     .getByText(persona.data.displayName)
     .click();
-  await page.waitForLoadState('networkidle');
 };

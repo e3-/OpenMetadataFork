@@ -15,6 +15,13 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, create_autospec, patch
 
+from metadata.generated.schema.api.data.createStoredProcedure import (
+    CreateStoredProcedureRequest,
+)
+from metadata.generated.schema.entity.data.storedProcedure import (
+    StoredProcedure,
+    StoredProcedureType,
+)
 from metadata.generated.schema.entity.services.connections.database.sapHana.sapHanaSQLConnection import (
     SapHanaSQLConnection,
 )
@@ -43,6 +50,7 @@ from metadata.ingestion.source.database.saphana.cdata_parser import (
     parse_registry,
 )
 from metadata.ingestion.source.database.saphana.lineage import SaphanaLineageSource
+from metadata.ingestion.source.database.saphana.models import SapHanaStoredProcedure
 
 RESOURCES_DIR = Path(__file__).parent.parent.parent / "resources" / "saphana"
 
@@ -451,6 +459,33 @@ def test_analytic_view_formula_column_source_mapping() -> None:
         # CUSTOMER_ID_1 maps from CUSTOMER_ID in CUSTOMER_DATA table
         expected_source = "CUSTOMER_ID" if col_name == "CUSTOMER_ID_1" else col_name
         assert col_mappings[0].sources == [expected_source]
+
+    # Test that formula columns use actual source column names, not attribute IDs
+    # This verifies the fix for formula columns that reference renamed attributes
+    # For example, if formula has "CUSTOMER_ID_1" (attribute ID), the source should be
+    # "CUSTOMER_ID" (actual column name from CUSTOMER_DATA table), not "CUSTOMER_ID_1"
+    formula_mappings = [
+        mapping for mapping in parsed_lineage.mappings if mapping.formula
+    ]
+    for mapping in formula_mappings:
+        # Verify that sources are actual table column names, not intermediate attribute IDs
+        for source_col in mapping.sources:
+            # Source columns should match columns in the source tables
+            if mapping.data_source == ds_orders:
+                assert source_col in orders_columns, (
+                    f"Source column '{source_col}' should be an actual column from ORDERS table, "
+                    f"not an attribute ID"
+                )
+            elif mapping.data_source == ds_customer:
+                # Map back to actual source column names
+                actual_customer_cols = [
+                    "CUSTOMER_ID" if c == "CUSTOMER_ID_1" else c
+                    for c in customer_columns
+                ]
+                assert source_col in actual_customer_cols, (
+                    f"Source column '{source_col}' should be an actual column from CUSTOMER_DATA table, "
+                    f"not an attribute ID"
+                )
 
 
 def test_formula_columns_reference_correct_layer():
@@ -869,6 +904,9 @@ def test_sap_hana_lineage_filter_pattern() -> None:
                     super().__init__(lowercase_data)
                     self._data = data
 
+                def _asdict(self):
+                    return {k.lower(): v for k, v in self._data.items()}
+
                 def __getitem__(self, key):
                     if key in self._data:
                         return self._data[key]
@@ -909,3 +947,620 @@ def test_sap_hana_lineage_filter_pattern() -> None:
 
         assert len(processed_views) == 2
         assert len(source.status.filtered) == 2
+
+
+def test_renamed_attribute_in_calculated_column() -> None:
+    """
+    Test that calculated columns correctly use source column names when referencing renamed attributes.
+
+    This is a regression test for the issue where:
+    - An attribute has id="EMAIL_1" but maps to columnName="EMAIL"
+    - A calculated attribute formula references "EMAIL_1"
+    - The lineage should use "EMAIL" (actual source column) not "EMAIL_1" (attribute ID)
+
+    Bug: Previously, when exploding formulas, we used the attribute ID from the formula
+         directly as the source column name, causing lookup failures.
+    Fix: Now we use mapping.sources from the base lineage, which contains the actual
+         source column names after traversing datasources.
+    """
+    with open(
+        RESOURCES_DIR / "custom" / "cdata_calculation_view_renamed_attribute.xml"
+    ) as file:
+        cdata = file.read()
+        parse_fn = parse_registry.registry.get(ViewType.CALCULATION_VIEW.value)
+        parsed_lineage: ParsedLineage = parse_fn(cdata)
+
+    # Find the calculated attribute EMAIL that references EMAIL_1 in its formula
+    email_calc_mappings = [
+        mapping
+        for mapping in parsed_lineage.mappings
+        if mapping.target == "EMAIL" and mapping.formula
+    ]
+
+    assert len(email_calc_mappings) > 0, "Should find calculated EMAIL attribute"
+
+    # Verify the formula references EMAIL_1 (the attribute ID)
+    email_mapping = email_calc_mappings[0]
+    assert (
+        "EMAIL_1" in email_mapping.formula
+    ), "Formula should reference EMAIL_1 attribute ID"
+
+    # CRITICAL: Verify that sources use actual column names from datasource, not attribute IDs
+    # The source should be "EMAIL" (from CV_SALESOVERVIEW), not "EMAIL_1"
+    # This is the core fix: _explode_formula now uses mapping.sources instead of formula references
+    assert "EMAIL" in email_mapping.sources, (
+        "Source should be 'EMAIL' (actual column from datasource), not 'EMAIL_1' (attribute ID). "
+        "This verifies the fix where formulas now use mapping.sources which contains actual "
+        "source column names after datasource traversal."
+    )
+
+    # Verify EMAIL_1 is NOT in sources (it's just the attribute ID, not a real column)
+    assert "EMAIL_1" not in email_mapping.sources, (
+        "Source should NOT contain 'EMAIL_1' - that's the attribute ID in the view, "
+        "not the actual column name from the source table"
+    )
+
+    # Verify the datasource is correct (CV_SALESOVERVIEW_1 is an alias to CV_SALESOVERVIEW in the XML)
+    ds_salesoverview_1 = DataSource(
+        name="CV_SALESOVERVIEW_1",
+        location="/my-package/calculationviews/CV_SALESOVERVIEW",
+        source_type=ViewType.CALCULATION_VIEW,
+    )
+    assert (
+        email_mapping.data_source == ds_salesoverview_1
+    ), "Calculated EMAIL should trace back to CV_SALESOVERVIEW_1"
+
+
+def test_calculation_view_end_to_end_lineage() -> None:
+    """
+    Comprehensive end-to-end test validating complete lineage for all columns in a calculation view.
+
+    This test ensures that for every column in the final output:
+    1. A lineage mapping exists
+    2. Source columns are correctly identified
+    3. Datasources are properly traced
+    4. Formula columns reference actual source columns, not intermediate attribute IDs
+    5. Constant mappings are handled correctly
+
+    Uses cdata_calculation_view.xml which has:
+    - AT_SFLIGHT (Attribute View) with columns from SFLIGHT table
+    - AN_SBOOK (Analytic View) with columns from SBOOK table
+    - Aggregation, Projection, and Union views with mappings
+    - Formula column USAGE_PCT = SEATSOCC_ALL / SEATSMAX_ALL
+    """
+    with open(RESOURCES_DIR / "cdata_calculation_view.xml") as file:
+        cdata = file.read()
+        parse_fn = parse_registry.registry.get(ViewType.CALCULATION_VIEW.value)
+        parsed_lineage: ParsedLineage = parse_fn(cdata)
+
+    # Expected datasources - lineage goes to the immediate source views
+    ds_at_sflight = DataSource(
+        name="AT_SFLIGHT",
+        location="/SFLIGHT.MODELING/attributeviews/AT_SFLIGHT",
+        source_type=ViewType.ATTRIBUTE_VIEW,
+    )
+    ds_an_sbook = DataSource(
+        name="AN_SBOOK",
+        location="/SFLIGHT.MODELING/analyticviews/AN_SBOOK",
+        source_type=ViewType.ANALYTIC_VIEW,
+    )
+
+    # Expected final output columns from logicalModel
+    expected_columns = {
+        "MANDT",
+        "CARRID",
+        "CARRNAME",
+        "FLDATE",
+        "CONNID",
+        "SEATSMAX_ALL",
+        "SEATSOCC_ALL",
+        "PAYMENTSUM",
+        "RETURN_INDEX",
+        "USAGE_PCT",  # Calculated measure
+    }
+
+    # Get all target columns from parsed lineage
+    actual_targets = {mapping.target for mapping in parsed_lineage.mappings}
+
+    # Verify all expected columns have lineage
+    assert expected_columns == actual_targets, (
+        f"Missing columns: {expected_columns - actual_targets}, "
+        f"Extra columns: {actual_targets - expected_columns}"
+    )
+
+    # Verify correct datasources are identified
+    assert parsed_lineage.sources == {
+        ds_at_sflight,
+        ds_an_sbook,
+    }, f"Expected sources: AT_SFLIGHT and AN_SBOOK, got: {parsed_lineage.sources}"
+
+    # Test specific column mappings end-to-end
+
+    # 1. MANDT - comes from both AT_SFLIGHT and AN_SBOOK
+    mandt_mappings = [m for m in parsed_lineage.mappings if m.target == "MANDT"]
+    mandt_sources = {m.data_source for m in mandt_mappings}
+    assert ds_at_sflight in mandt_sources, "MANDT should come from AT_SFLIGHT"
+    assert ds_an_sbook in mandt_sources, "MANDT should come from AN_SBOOK"
+    assert all(
+        m.sources == ["MANDT"] for m in mandt_mappings
+    ), "MANDT should map directly without renaming"
+
+    # 2. CARRNAME - comes only from AT_SFLIGHT
+    carrname_mappings = [m for m in parsed_lineage.mappings if m.target == "CARRNAME"]
+    assert len(carrname_mappings) == 1, "CARRNAME should have exactly one source"
+    assert carrname_mappings[0].data_source == ds_at_sflight
+    assert carrname_mappings[0].sources == ["CARRNAME"]
+
+    # 3. SEATSMAX_ALL - comes from AT_SFLIGHT
+    seatsmax_mappings = [
+        m for m in parsed_lineage.mappings if m.target == "SEATSMAX_ALL"
+    ]
+    assert len(seatsmax_mappings) == 1
+    assert seatsmax_mappings[0].data_source == ds_at_sflight
+    assert seatsmax_mappings[0].sources == ["SEATSMAX_ALL"]
+
+    # 4. USAGE_PCT - calculated formula column (CRITICAL TEST)
+    usage_pct_mappings = [m for m in parsed_lineage.mappings if m.target == "USAGE_PCT"]
+
+    # Should have mappings from AT_SFLIGHT (formula references SEATSOCC_ALL and SEATSMAX_ALL)
+    usage_pct_at_sflight = [
+        m for m in usage_pct_mappings if m.data_source == ds_at_sflight
+    ]
+    assert (
+        len(usage_pct_at_sflight) >= 1
+    ), f"USAGE_PCT should have at least one lineage from AT_SFLIGHT, got {len(usage_pct_at_sflight)}"
+
+    # CRITICAL: Verify formula mappings use actual source column names from AT_SFLIGHT
+    # The formula references SEATSOCC_ALL and SEATSMAX_ALL
+    formula_mappings = [m for m in usage_pct_at_sflight if m.formula is not None]
+    assert len(formula_mappings) >= 1, "Should have at least one mapping with formula"
+
+    # Collect all source columns from formula mappings
+    all_formula_sources = set()
+    for m in formula_mappings:
+        all_formula_sources.update(m.sources)
+
+    # The formula should reference both columns
+    assert (
+        "SEATSOCC_ALL" in all_formula_sources
+    ), f"Formula should reference SEATSOCC_ALL, got: {all_formula_sources}"
+    assert (
+        "SEATSMAX_ALL" in all_formula_sources
+    ), f"Formula should reference SEATSMAX_ALL, got: {all_formula_sources}"
+
+    # Verify formula text is preserved in at least one mapping
+    assert any(
+        '"SEATSOCC_ALL"' in m.formula and '"SEATSMAX_ALL"' in m.formula
+        for m in formula_mappings
+    ), "Formula text should be preserved with both column references"
+
+    # Verify no mappings reference intermediate calculation view names as sources
+    # All sources should be actual table column names
+    for mapping in parsed_lineage.mappings:
+        for source_col in mapping.sources:
+            # Source column names should not contain calculation view IDs
+            assert not source_col.startswith(
+                "Aggregation_"
+            ), f"Source should be table column, not calculation view: {source_col}"
+            assert not source_col.startswith(
+                "Projection_"
+            ), f"Source should be table column, not calculation view: {source_col}"
+            assert not source_col.startswith(
+                "Union_"
+            ), f"Source should be table column, not calculation view: {source_col}"
+
+    # Verify datasources are real tables or views, not logical intermediate views
+    for source in parsed_lineage.sources:
+        assert source.source_type in [
+            ViewType.DATA_BASE_TABLE,
+            ViewType.ATTRIBUTE_VIEW,
+            ViewType.ANALYTIC_VIEW,
+            ViewType.CALCULATION_VIEW,
+        ], f"Datasource should be a real entity, not LOGICAL: {source}"
+        assert (
+            source.source_type != ViewType.LOGICAL
+        ), f"Final lineage should not contain LOGICAL datasources: {source}"
+
+
+# ---- Tests for TABLE_FUNCTION support (issue #24586) ----
+
+
+def test_sap_hana_stored_procedure_model() -> None:
+    """Verify SapHanaStoredProcedure model validates from lowercase keys returned by hdbcli _asdict()"""
+    row_data = {
+        "function_name": "my-package::TF_ORDERS",
+        "schema_name": "SYSTEM",
+        "definition": "FUNCTION my-package::TF_ORDERS() RETURNS TABLE ...",
+    }
+    sp = SapHanaStoredProcedure.model_validate(row_data)
+    assert sp.name == "my-package::TF_ORDERS"
+    assert sp.schema_name == "SYSTEM"
+    assert sp.definition == "FUNCTION my-package::TF_ORDERS() RETURNS TABLE ..."
+
+
+def test_sap_hana_stored_procedure_model_none_definition() -> None:
+    """Verify SapHanaStoredProcedure handles None definition from SYS.FUNCTIONS"""
+    row_data = {
+        "function_name": "TF_SIMPLE",
+        "schema_name": "SYSTEM",
+        "definition": None,
+    }
+    sp = SapHanaStoredProcedure.model_validate(row_data)
+    assert sp.name == "TF_SIMPLE"
+    assert sp.definition is None
+
+
+def test_parse_calculation_view_with_table_function() -> None:
+    """Test parsing a real CDATA XML that references a TABLE_FUNCTION data source.
+
+    Uses a real calculation view exported from HANA Studio where CV_TF_ORDERS
+    references table function my-package::TF_ORDERS through a Projection view.
+    This validates:
+    - TABLE_FUNCTION is recognized as a valid ViewType from the XML
+    - Column mappings are correctly traced through the Projection layer
+    - The DataSource location preserves the package::name format
+    """
+    with open(
+        RESOURCES_DIR / "custom" / "cdata_calculation_view_table_function.xml"
+    ) as file:
+        cdata = file.read()
+        parse_fn = parse_registry.registry.get(ViewType.CALCULATION_VIEW.value)
+        parsed_lineage: ParsedLineage = parse_fn(cdata)
+
+    ds_tf = DataSource(
+        name="TF_ORDERS",
+        location="my-package::TF_ORDERS",
+        source_type=ViewType.TABLE_FUNCTION,
+    )
+
+    assert parsed_lineage
+    assert parsed_lineage.sources == {ds_tf}
+    assert len(parsed_lineage.mappings) == 3
+
+    targets = {m.target for m in parsed_lineage.mappings}
+    assert targets == {"ORDER_ID", "QUANTITY", "PRICE"}
+
+    for m in parsed_lineage.mappings:
+        assert m.data_source == ds_tf
+        assert m.sources == [m.target]
+        assert m.formula is None
+
+
+def test_get_entity_delegates_to_table_function_for_table_function_type() -> None:
+    """Test that get_entity routes TABLE_FUNCTION sources to _get_table_function_entity,
+    not to the regular Table FQN-based lookup.
+    This follows the same pattern as test_schema_mapping_in_datasource.
+    """
+    ds = DataSource(
+        name="TF_ORDERS",
+        location="my-package::TF_ORDERS",
+        source_type=ViewType.TABLE_FUNCTION,
+    )
+
+    mock_metadata = MagicMock()
+    mock_engine = MagicMock()
+    mock_sp = MagicMock()
+
+    with patch.object(
+        ds, "_get_table_function_entity", return_value=mock_sp
+    ) as mock_fn:
+        result = ds.get_entity(
+            metadata=mock_metadata, engine=mock_engine, service_name="test_service"
+        )
+        mock_fn.assert_called_once_with(
+            metadata=mock_metadata, service_name="test_service"
+        )
+        assert result is mock_sp
+
+
+def test_get_table_function_entity_encodes_fqn_and_searches_es() -> None:
+    """Test _get_table_function_entity encodes :: separators and searches via ES.
+
+    SAP HANA table function names use :: (e.g. my-package::TF_ORDERS),
+    but OpenMetadata FQNs encode :: as __reserved__colon__. This test verifies
+    the encoding is applied before the ES search.
+    """
+    ds = DataSource(
+        name="TF_ORDERS",
+        location="my-package::TF_ORDERS",
+        source_type=ViewType.TABLE_FUNCTION,
+    )
+
+    mock_metadata = MagicMock()
+    mock_sp = MagicMock()
+    mock_metadata.es_search_from_fqn.return_value = [mock_sp]
+
+    with patch(
+        "metadata.ingestion.source.database.saphana.cdata_parser.get_entity_from_es_result",
+        return_value=mock_sp,
+    ) as mock_get_entity:
+        result = ds._get_table_function_entity(
+            metadata=mock_metadata, service_name="sap-hana-svc"
+        )
+
+    call_args = mock_metadata.es_search_from_fqn.call_args
+    assert call_args.kwargs["entity_type"] is StoredProcedure
+    search_string = call_args.kwargs["fqn_search_string"]
+    assert "my-package__reserved__colon__TF_ORDERS" in search_string
+    assert "sap-hana-svc" in search_string
+    assert "::" not in search_string
+
+    mock_get_entity.assert_called_once()
+    assert result is mock_sp
+
+
+def test_get_table_function_entity_returns_none_when_not_found() -> None:
+    """Test _get_table_function_entity returns None when the table function
+    has not been ingested yet (ES returns no results)."""
+    ds = DataSource(
+        name="TF_MISSING",
+        location="pkg::TF_MISSING",
+        source_type=ViewType.TABLE_FUNCTION,
+    )
+
+    mock_metadata = MagicMock()
+    mock_metadata.es_search_from_fqn.return_value = None
+
+    with patch(
+        "metadata.ingestion.source.database.saphana.cdata_parser.get_entity_from_es_result",
+        return_value=None,
+    ):
+        result = ds._get_table_function_entity(
+            metadata=mock_metadata, service_name="sap-hana-svc"
+        )
+
+    assert result is None
+
+
+def test_to_request_skips_source_when_entity_not_found() -> None:
+    """Test that to_request gracefully skips sources whose entity cannot be resolved.
+    This follows the same pattern as test_parsed_lineage_with_schema_mapping.
+    """
+    ds = DataSource(
+        name="TF_MISSING",
+        location="pkg::TF_MISSING",
+        source_type=ViewType.TABLE_FUNCTION,
+    )
+    mapping = ColumnMapping(data_source=ds, sources=["COL"], target="COL")
+    parsed = ParsedLineage(mappings=[mapping], sources={ds})
+
+    mock_metadata = MagicMock()
+    mock_engine = MagicMock()
+    mock_to_entity = MagicMock()
+    mock_to_entity.fullyQualifiedName.root = "svc.db.schema.cv"
+
+    with patch(
+        "metadata.ingestion.source.database.saphana.cdata_parser.DataSource.get_entity",
+        return_value=None,
+    ):
+        results = list(
+            parsed.to_request(
+                metadata=mock_metadata,
+                engine=mock_engine,
+                service_name="test_service",
+                to_entity=mock_to_entity,
+            )
+        )
+
+    assert len(results) == 0
+
+
+def test_get_stored_procedures_with_filter() -> None:
+    """Test get_stored_procedures queries SYS.FUNCTIONS and applies name filter.
+    Follows the same pattern as test_get_stored_procedures in test_mssql.py.
+    """
+    from metadata.ingestion.source.database.saphana.metadata import SaphanaSource
+
+    mock_source = MagicMock(spec=SaphanaSource)
+    mock_source.source_config = MagicMock()
+    mock_source.source_config.includeStoredProcedures = True
+
+    mock_context = MagicMock()
+    mock_context.database_schema = "SYSTEM"
+    mock_source.context = MagicMock()
+    mock_source.context.get.return_value = mock_context
+
+    class MockRow:
+        """Simulates SQLAlchemy Row returned by hdbcli with lowercase keys"""
+
+        def __init__(self, data):
+            self._data = data
+
+        def _asdict(self):
+            return self._data
+
+    mock_rows = [
+        MockRow(
+            {
+                "function_name": "pkg::TF_INCLUDE",
+                "schema_name": "SYSTEM",
+                "definition": "...",
+            }
+        ),
+        MockRow(
+            {
+                "function_name": "pkg::TF_EXCLUDE",
+                "schema_name": "SYSTEM",
+                "definition": "...",
+            }
+        ),
+    ]
+
+    mock_conn = MagicMock()
+    mock_result = MagicMock()
+    mock_result.all.return_value = mock_rows
+    mock_conn.execute.return_value = mock_result
+
+    mock_engine = MagicMock()
+    mock_engine.connect.return_value.__enter__ = MagicMock(return_value=mock_conn)
+    mock_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+    mock_source.engine = mock_engine
+
+    def mock_is_filtered(name):
+        return "EXCLUDE" in name
+
+    mock_source.is_stored_procedure_filtered = mock_is_filtered
+
+    results = list(SaphanaSource.get_stored_procedures(mock_source))
+
+    assert len(results) == 1
+    assert results[0].name == "pkg::TF_INCLUDE"
+    assert results[0].schema_name == "SYSTEM"
+
+
+def test_get_stored_procedures_disabled() -> None:
+    """Test get_stored_procedures is a no-op when includeStoredProcedures is False"""
+    from metadata.ingestion.source.database.saphana.metadata import SaphanaSource
+
+    mock_source = MagicMock(spec=SaphanaSource)
+    mock_source.source_config = MagicMock()
+    mock_source.source_config.includeStoredProcedures = False
+
+    results = list(SaphanaSource.get_stored_procedures(mock_source))
+    assert len(results) == 0
+
+
+def test_get_stored_procedures_bad_row_does_not_abort() -> None:
+    """A single unparseable row should not abort the generator.
+
+    The try/except must be *inside* the for-loop so that remaining
+    rows are still yielded and the failure is surfaced via status.failed().
+    """
+    from metadata.ingestion.source.database.saphana.metadata import SaphanaSource
+
+    mock_source = MagicMock(spec=SaphanaSource)
+    mock_source.source_config = MagicMock()
+    mock_source.source_config.includeStoredProcedures = True
+
+    mock_context = MagicMock()
+    mock_context.database_schema = "SYSTEM"
+    mock_source.context = MagicMock()
+    mock_source.context.get.return_value = mock_context
+
+    class MockRow:
+        def __init__(self, data):
+            self._data = data
+
+        def _asdict(self):
+            return self._data
+
+    mock_rows = [
+        MockRow(
+            {
+                "function_name": "TF_GOOD_1",
+                "schema_name": "SYSTEM",
+                "definition": "...",
+            }
+        ),
+        # Bad row: missing required field 'function_name'
+        MockRow({"schema_name": "SYSTEM", "definition": "..."}),
+        MockRow(
+            {
+                "function_name": "TF_GOOD_2",
+                "schema_name": "SYSTEM",
+                "definition": "...",
+            }
+        ),
+    ]
+
+    mock_conn = MagicMock()
+    mock_result = MagicMock()
+    mock_result.all.return_value = mock_rows
+    mock_conn.execute.return_value = mock_result
+
+    mock_engine = MagicMock()
+    mock_engine.connect.return_value.__enter__ = MagicMock(return_value=mock_conn)
+    mock_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+    mock_source.engine = mock_engine
+
+    mock_source.is_stored_procedure_filtered = MagicMock(return_value=False)
+    mock_source.status = MagicMock()
+
+    results = list(SaphanaSource.get_stored_procedures(mock_source))
+
+    # Both good rows should be yielded — the bad row must not abort the generator
+    assert len(results) == 2
+    assert results[0].name == "TF_GOOD_1"
+    assert results[1].name == "TF_GOOD_2"
+
+    # The failure should have been surfaced
+    mock_source.status.failed.assert_called_once()
+
+
+def test_yield_stored_procedure_creates_request() -> None:
+    """Test yield_stored_procedure produces a valid CreateStoredProcedureRequest.
+    Follows the same pattern as test_yield_stored_procedure in test_mariadb.py.
+    """
+    from metadata.ingestion.source.database.saphana.metadata import SaphanaSource
+
+    stored_proc = SapHanaStoredProcedure.model_validate(
+        {
+            "function_name": "my-package::TF_ORDERS",
+            "schema_name": "SYSTEM",
+            "definition": "FUNCTION my-package::TF_ORDERS() RETURNS TABLE (ORDER_ID INT)",
+        }
+    )
+
+    mock_source = MagicMock(spec=SaphanaSource)
+    mock_source.metadata = MagicMock()
+    mock_source.register_record_stored_proc_request = MagicMock()
+
+    mock_context = MagicMock()
+    mock_context.database_service = "sap-hana-svc"
+    mock_context.database = "SYSTEMDB"
+    mock_context.database_schema = "SYSTEM"
+    mock_source.context = MagicMock()
+    mock_source.context.get.return_value = mock_context
+
+    with patch(
+        "metadata.ingestion.source.database.saphana.metadata.fqn.build",
+        return_value="sap-hana-svc.SYSTEMDB.SYSTEM",
+    ):
+        results = list(SaphanaSource.yield_stored_procedure(mock_source, stored_proc))
+
+    assert len(results) == 1
+    assert results[0].right is not None
+    request = results[0].right
+    assert isinstance(request, CreateStoredProcedureRequest)
+    # EntityName encodes :: as __reserved__colon__ via replace_separators
+    assert "TF_ORDERS" in str(request.name.root)
+    assert request.storedProcedureType == StoredProcedureType.Function
+    assert (
+        request.storedProcedureCode.code
+        == "FUNCTION my-package::TF_ORDERS() RETURNS TABLE (ORDER_ID INT)"
+    )
+    mock_source.register_record_stored_proc_request.assert_called_once_with(request)
+
+
+def test_yield_stored_procedure_empty_definition() -> None:
+    """Test yield_stored_procedure uses empty string when definition is None"""
+    from metadata.ingestion.source.database.saphana.metadata import SaphanaSource
+
+    stored_proc = SapHanaStoredProcedure.model_validate(
+        {
+            "function_name": "TF_SIMPLE",
+            "schema_name": "SYSTEM",
+            "definition": None,
+        }
+    )
+
+    mock_source = MagicMock(spec=SaphanaSource)
+    mock_source.metadata = MagicMock()
+    mock_source.register_record_stored_proc_request = MagicMock()
+
+    mock_context = MagicMock()
+    mock_context.database_service = "sap-hana-svc"
+    mock_context.database = "SYSTEMDB"
+    mock_context.database_schema = "SYSTEM"
+    mock_source.context = MagicMock()
+    mock_source.context.get.return_value = mock_context
+
+    with patch(
+        "metadata.ingestion.source.database.saphana.metadata.fqn.build",
+        return_value="sap-hana-svc.SYSTEMDB.SYSTEM",
+    ):
+        results = list(SaphanaSource.yield_stored_procedure(mock_source, stored_proc))
+
+    assert len(results) == 1
+    request = results[0].right
+    assert request.storedProcedureCode.code == ""

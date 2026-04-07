@@ -12,8 +12,11 @@
  */
 package org.openmetadata.service.jdbi3;
 
+import static org.openmetadata.service.Entity.FIELD_DISPLAY_NAME;
 import static org.openmetadata.service.util.EntityUtil.objectMatch;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
 import lombok.Getter;
@@ -27,9 +30,11 @@ import org.openmetadata.schema.type.Include;
 import org.openmetadata.schema.type.Relationship;
 import org.openmetadata.schema.type.change.ChangeSource;
 import org.openmetadata.schema.utils.JsonUtils;
+import org.openmetadata.service.search.PropagationDescriptor;
 import org.openmetadata.service.secrets.SecretsManager;
 import org.openmetadata.service.secrets.SecretsManagerFactory;
 import org.openmetadata.service.util.EntityUtil;
+import org.openmetadata.service.util.EntityUtil.RelationIncludes;
 
 public abstract class ServiceEntityRepository<
         T extends ServiceEntityInterface, S extends ServiceConnectionEntityInterface>
@@ -51,7 +56,23 @@ public abstract class ServiceEntityRepository<
   }
 
   @Override
-  public void setFields(T entity, EntityUtil.Fields fields) {
+  public List<PropagationDescriptor> getSearchPropagationDescriptors() {
+    List<PropagationDescriptor> descriptors = new ArrayList<>();
+    for (PropagationDescriptor desc : super.getSearchPropagationDescriptors()) {
+      if (!desc.fieldName().equals(FIELD_DISPLAY_NAME)) {
+        descriptors.add(desc);
+      }
+    }
+    descriptors.add(
+        new PropagationDescriptor(
+            FIELD_DISPLAY_NAME,
+            PropagationDescriptor.PropagationType.NESTED_FIELD,
+            "service.displayName"));
+    return descriptors;
+  }
+
+  @Override
+  public void setFields(T entity, EntityUtil.Fields fields, RelationIncludes relationIncludes) {
     entity.setPipelines(fields.contains("pipelines") ? getIngestionPipelines(entity) : null);
   }
 
@@ -105,11 +126,12 @@ public abstract class ServiceEntityRepository<
     return service;
   }
 
-  /** Remove the secrets from the secret manager */
+  /** Remove the secrets from the secret manager only on hard delete */
   @Override
   protected void postDelete(T service, boolean hardDelete) {
     super.postDelete(service, hardDelete);
-    if (service.getConnection() != null) {
+    // Only delete secrets on hard delete to allow soft delete to be reversible
+    if (hardDelete && service.getConnection() != null) {
       SecretsManagerFactory.getSecretsManager()
           .deleteSecretsFromServiceConnectionConfig(
               service.getConnection().getConfig(),
@@ -134,8 +156,8 @@ public abstract class ServiceEntityRepository<
     @Transaction
     @Override
     public void entitySpecificUpdate(boolean consolidatingChanges) {
-      updateConnection();
-      updateIngestionRunner();
+      compareAndUpdate("connection", this::updateConnection);
+      compareAndUpdate("ingestionRunner", this::updateIngestionRunner);
     }
 
     private void updateConnection() {
@@ -178,7 +200,7 @@ public abstract class ServiceEntityRepository<
           updated.getIngestionRunner() != null ? updated.getIngestionRunner().getId() : null;
       if (!Objects.equals(originalAgentId, updatedAgentId)) {
         addIngestionRunnerRelationship(updated);
-        recordChange("ingestionAgent", originalAgentId, updatedAgentId, true);
+        recordChange("ingestionRunner", originalAgentId, updatedAgentId, true);
       }
     }
   }
