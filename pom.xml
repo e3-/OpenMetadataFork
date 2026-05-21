@@ -94,10 +94,10 @@
     <jdbi3.version>3.37.1</jdbi3.version>
     <commons-cli.version>1.9.0</commons-cli.version>
     <commons-io.version>2.17.0</commons-io.version>
-    <redshift-jdbc.version>2.1.0.30</redshift-jdbc.version>
+    <redshift-jdbc.version>2.2.2</redshift-jdbc.version>
     <gson.version>2.11.0</gson.version>
     <mysql.connector.version>9.3.0</mysql.connector.version>
-    <postgres.connector.version>42.7.7</postgres.connector.version>
+    <postgres.connector.version>42.7.11</postgres.connector.version>
     <jsonschema2pojo.version>1.2.2</jsonschema2pojo.version>
     <lombok.version>1.18.36</lombok.version>
     <tomcat-jdbc.version>11.0.5</tomcat-jdbc.version>
@@ -108,7 +108,7 @@
     <openapiswagger.version>2.2.25</openapiswagger.version>
     <httpclient.version>4.5.14</httpclient.version>
     <spring.version>6.2.11</spring.version>
-    <log4j.version>2.25.3</log4j.version>
+    <log4j.version>2.25.4</log4j.version>
     <org.junit.jupiter.version>5.11.4</org.junit.jupiter.version>
     <org.junit.platform.version>1.11.4</org.junit.platform.version>
     <dropwizard-health.version>5.0.0</dropwizard-health.version>
